@@ -11,6 +11,7 @@ import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Rikshaws from "./pages/Rikshaws";
+import Customers from "./pages/Customers";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -44,7 +45,7 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<div>Customers Page - Coming Soon</div>} />
+              <Route index element={<Customers />} />
             </Route>
             <Route path="/installments" element={
               <ProtectedRoute>
