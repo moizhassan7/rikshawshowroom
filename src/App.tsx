@@ -1,4 +1,4 @@
-
+// src/App.tsx
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -12,6 +12,8 @@ import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Rikshaws from "./pages/Rikshaws";
 import Customers from "./pages/Customers";
+import Installments from "./pages/Installments";
+import SellRickshaw from "./pages/SellRickshaw"; // Add the new component
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -52,7 +54,15 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<div>Installments Page - Coming Soon</div>} />
+              <Route index element={<Installments />} />
+            </Route>
+            {/* Add the new route */}
+            <Route path="/sell-rickshaw" element={
+              <ProtectedRoute>
+                <AdminLayout />
+              </ProtectedRoute>
+            }>
+              <Route index element={<SellRickshaw />} />
             </Route>
             <Route path="/reports" element={
               <ProtectedRoute>

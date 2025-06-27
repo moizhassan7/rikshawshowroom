@@ -14,6 +14,7 @@ import {
   SidebarInset
 } from '@/components/ui/sidebar';
 import { 
+  ShoppingBag,
   LayoutDashboard, 
   Car, 
   Users, 
@@ -28,6 +29,11 @@ const AdminLayout = () => {
   const location = useLocation();
 
   const menuItems = [
+     {
+      title: 'Sell a Rikshaw',
+      icon: ShoppingBag,
+      href: '/sell-rickshaw',
+    },
     {
       title: 'Dashboard',
       icon: LayoutDashboard,
