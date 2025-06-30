@@ -73,7 +73,7 @@ const AdminLayout = () => {
           <SidebarHeader className="border-b px-6 py-4">
             <div className="flex items-center gap-2">
               <Building2 className="h-6 w-6 text-primary" />
-              <span className="font-bold text-lg">Rikshaw Admin</span>
+              <span className="font-bold text-lg">Al-Hamad Traders</span>
             </div>
           </SidebarHeader>
           

@@ -26,14 +26,13 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/auth" element={<Auth />} />
+            <Route path="/" element={<Auth />} />
             <Route path="/dashboard" element={
               <ProtectedRoute>
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<Dashboard />} />
+              <Route index element={<div>Dashboard Page - Coming Soon</div>} />
             </Route>
             <Route path="/rikshaws" element={
               <ProtectedRoute>
@@ -54,7 +53,7 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<Installments />} />
+              <Route index element={<div>Installment Page - Coming Soon</div>} />
             </Route>
             {/* Add the new route */}
             <Route path="/sell-rickshaw" element={
