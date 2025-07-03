@@ -8,73 +8,75 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { User, Car, Calendar, DollarSign, Plus, Check, ChevronDown, ChevronUp } from 'lucide-react';
-import { format, addMonths } from 'date-fns';
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X } from 'lucide-react';
+import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
+// Define interfaces for Customer, Rikshaw, and AdvancePayment
 interface Customer {
   id: string;
   name: string;
+  address: string;
   cnic: string;
   phone: string;
-  address: string;
-  guarantor_name?: string;
-  guarantor_cnic?: string;
-  guarantor_phone?: string;
-  guarantor_address?: string;
+  guarantor_name: string;
+  guarantor_cnic: string;
+  guarantor_phone: string;
+  guarantor_address: string;
+  bank_name: string;
+  cheque_number: string;
 }
 
 interface Rikshaw {
   id: string;
-  model: string;
+  manufacturer: string;
+  model_name: string;
   engine_number: string;
-  price: number;
-  status: string;
+  chassis_number: string;
+  registration_number: string;
+  type: string;
+}
+
+interface AdvancePayment {
+  amount: number;
+  date: string;
 }
 
 const SellRickshaw = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   
-  // Form states
-  const [newCustomerData, setNewCustomerData] = useState({
-    name: '',
-    cnic: '',
-    phone: '',
-    address: ''
-  });
-  
+  // State for sale data, including the new agreement_date
   const [saleData, setSaleData] = useState({
     customer_id: '',
     rikshaw_id: '',
     total_price: 0,
-    advance_paid: 0,
+    total_advance_collected: 0, // Renamed from advance_agreed
     monthly_installment: 0,
     duration_months: 12,
-    start_date: format(new Date(), 'yyyy-MM-dd'),
-    guarantor_name: '',
-    guarantor_cnic: '',
-    guarantor_phone: '',
-    guarantor_address: '',
-    bank_name: '',
-    cheque_number: ''
+    agreement_date: new Date().toISOString().split('T')[0], // New field: Agreement Date
   });
   
-  const [installmentSchedule, setInstallmentSchedule] = useState<any[]>([]);
+  // State for individual advance payments
+  const [advancePayments, setAdvancePayments] = useState<AdvancePayment[]>([
+    { amount: 0, date: new Date().toISOString().split('T')[0] }
+  ]);
+  
+  // State to store details of the created sale for receipt generation
   const [createdSaleDetails, setCreatedSaleDetails] = useState<any>(null);
-  const [firstInstallment, setFirstInstallment] = useState(0);
-  const [installmentError, setInstallmentError] = useState('');
-  const [isGuarantorOpen, setIsGuarantorOpen] = useState(false);
-  const [isBankOpen, setIsBankOpen] = useState(false);
-  const [isEditingCustomer, setIsEditingCustomer] = useState(false);
-  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [cnicError, setCnicError] = useState('');
-  const [phoneError, setPhoneError] = useState('');
+  // State to manage submission loading
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  // State to toggle between form and preview
+  const [showPreview, setShowPreview] = useState(false);
 
-  const remainingBalance = saleData.total_price - saleData.advance_paid;
+  // Effect to update total_advance_collected based on the first advance payment
+  useEffect(() => {
+    // total_advance_collected is only the first advance payment
+    const firstAdvanceAmount = advancePayments.length > 0 ? advancePayments[0].amount : 0;
+    setSaleData(prev => ({ ...prev, total_advance_collected: firstAdvanceAmount }));
+  }, [advancePayments]);
 
-  // Fetch customers
+  // Fetch customers data using react-query
   const { data: customers = [], isLoading: loadingCustomers } = useQuery({
     queryKey: ['customers'],
     queryFn: async () => {
@@ -87,946 +89,857 @@ const SellRickshaw = () => {
     }
   });
 
-  // Fetch available rikshaws
-  const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
-    queryKey: ['available-rikshaws'],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('rikshaws')
-        .select('*')
-        .eq('status', 'available')
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      return data;
-    }
-  });
+  // Fetch available rikshaws data using react-query
+const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
+  queryKey: ['available-rikshaws'],
+  queryFn: async () => {
+    const { data, error } = await supabase
+      .from('rikshaws')
+      .select('*')
+      .eq('availability', 'unsold') // <-- fix here
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data;
+  }
+});
 
-  // Get selected customer details
+
+  // Find the selected customer from the fetched data
   const selectedCustomer = customers.find(c => c.id === saleData.customer_id);
+  
+  // Find the selected rickshaw from the fetched data
+  const selectedRikshaw = rikshaws.find(r => r.id === saleData.rikshaw_id);
 
-  // Create customer mutation
-  const createCustomerMutation = useMutation({
-    mutationFn: async (customerData: any) => {
-      // Check for duplicate CNIC
-      const { data: existing, error: fetchError } = await supabase
-        .from('customers')
-        .select('id')
-        .eq('cnic', customerData.cnic)
-        .maybeSingle();
-      
-      if (fetchError) throw fetchError;
-      if (existing) throw new Error("Customer with this CNIC already exists");
-      
-      // Validate CNIC
-      if (customerData.cnic.length !== 13) {
-        throw new Error("CNIC must be 13 digits");
-      }
-      
-      // Validate phone
-      if (customerData.phone.length !== 11) {
-        throw new Error("Phone must be 11 digits");
-      }
+  // Handler for changing individual advance payment details (amount or date)
+  const handleAdvancePaymentChange = (index: number, field: keyof AdvancePayment, value: any) => {
+    const newPayments = [...advancePayments];
+    newPayments[index] = { ...newPayments[index], [field]: value };
+    setAdvancePayments(newPayments);
+  };
 
-      const { data, error } = await supabase
-        .from('customers')
-        .insert([customerData])
-        .select()
-        .single();
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: (newCustomer) => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      setSaleData(prev => ({ ...prev, customer_id: newCustomer.id }));
-      setNewCustomerData({ name: '', cnic: '', phone: '', address: '' });
-      toast({
-        title: "Success",
-        description: "Customer created successfully! Now complete the sale."
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive"
-      });
+  // Handler for adding a new advance payment field
+  const addAdvancePayment = () => {
+    if (advancePayments.length < 4) { // Limit to a maximum of 4 advance payments
+      setAdvancePayments([
+        ...advancePayments,
+        { amount: 0, date: new Date().toISOString().split('T')[0] } // Initialize with current date
+      ]);
     }
-  });
+  };
 
-  // Update customer mutation
-  const updateCustomerMutation = useMutation({
-    mutationFn: async (customerData: Customer) => {
-      // Validate CNIC
-      if (customerData.cnic.length !== 13) {
-        throw new Error("CNIC must be 13 digits");
-      }
-      
-      // Validate phone
-      if (customerData.phone.length !== 11) {
-        throw new Error("Phone must be 11 digits");
-      }
-
-      const { data, error } = await supabase
-        .from('customers')
-        .update(customerData)
-        .eq('id', customerData.id)
-        .select()
-        .single();
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      toast({ title: "Success", description: "Customer updated successfully!" });
-      setIsEditingCustomer(false);
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive"
-      });
+  // Handler for removing an advance payment field
+  const removeAdvancePayment = (index: number) => {
+    if (advancePayments.length > 1) { // Ensure at least one advance payment field remains
+      const newPayments = [...advancePayments];
+      newPayments.splice(index, 1);
+      setAdvancePayments(newPayments);
     }
-  });
+  };
 
-  // Create sale mutation
+  // Mutation to create a new sale record in Supabase
   const createSaleMutation = useMutation({
-    mutationFn: async (saleData: any) => {
-      // Validate guarantor details
-      if (!saleData.guarantor_name || !saleData.guarantor_cnic || !saleData.guarantor_phone) {
-        throw new Error("Please fill all required guarantor details");
+    mutationFn: async () => {
+      setIsSubmitting(true); // Set submitting state to true
+
+      // Basic validation for selected customer and rickshaw
+      if (!selectedCustomer || !selectedRikshaw) {
+        throw new Error("Invalid customer or rickshaw selection");
       }
 
-      // Validate bank details
-      if (!saleData.bank_name || !saleData.cheque_number) {
-        throw new Error("Please fill all required bank details");
-      }
-
+      // Insert the new installment plan into the 'installment_plans' table
       const { data: plan, error: planError } = await supabase
         .from('installment_plans')
         .insert([{
           customer_id: saleData.customer_id,
           rikshaw_id: saleData.rikshaw_id,
           total_price: saleData.total_price,
-          advance_paid: saleData.advance_paid,
+          advance_paid: saleData.total_advance_collected, // Store total_advance_collected as advance_paid in DB
+          advance_payments: advancePayments, // Store individual advance payments
           monthly_installment: saleData.monthly_installment,
           duration_months: saleData.duration_months,
-          start_date: saleData.start_date,
-          guarantor_name: saleData.guarantor_name,
-          guarantor_cnic: saleData.guarantor_cnic,
-          guarantor_phone: saleData.guarantor_phone,
-          guarantor_address: saleData.guarantor_address,
-          bank_name: saleData.bank_name,
-          cheque_number: saleData.cheque_number
+          agreement_date: saleData.agreement_date, // Store agreement date
+          guarantor_name: selectedCustomer.guarantor_name,
+          guarantor_cnic: selectedCustomer.guarantor_cnic,
+          guarantor_phone: selectedCustomer.guarantor_phone,
+          guarantor_address: selectedCustomer.guarantor_address,
+          bank_name: selectedCustomer.bank_name,
+          cheque_number: selectedCustomer.cheque_number,
+          rikshaw_details: { // Store rickshaw details for historical record
+            manufacturer: selectedRikshaw.manufacturer,
+            model_name: selectedRikshaw.model_name,
+            engine_number: selectedRikshaw.engine_number,
+            chassis_number: selectedRikshaw.chassis_number,
+            registration_number: selectedRikshaw.registration_number,
+            type: selectedRikshaw.type
+          }
         }])
-        .select()
-        .single();
+        .select() // Select the newly inserted row
+        .single(); // Expect a single row back
 
-      if (planError) throw planError;
+      if (planError) throw planError; // Handle insertion error
 
-      const installmentsToCreate = [];
-      for (const installment of installmentSchedule) {
-        if (installment.status === 'Advance') continue;
-        installmentsToCreate.push({
-          plan_id: plan.id,
-          installment_number: installment.month,
-          due_date: new Date(installment.due_date).toISOString(),
-          amount: parseFloat(installment.amount.replace(/,/g, '')),
-          status: 'unpaid'
-        });
-      }
-
-      const { error: installmentsError } = await supabase
-        .from('installments')
-        .insert(installmentsToCreate);
-      if (installmentsError) throw installmentsError;
-
+      // Update the availability of the sold rickshaw to 'sold'
       const { error: rikshawError } = await supabase
         .from('rikshaws')
-        .update({ status: 'sold' })
-        .eq('id', saleData.rikshaw_id);
-      if (rikshawError) throw rikshawError;
+        .update({ availability: 'sold' })
+        .eq('id', saleData.rikshaw_id); // Match by rickshaw ID
+      if (rikshawError) throw rikshawError; // Handle update error
 
-      const { data: customer } = await supabase
-        .from('customers')
-        .select('*')
-        .eq('id', saleData.customer_id)
-        .single();
-
-      const { data: rikshaw } = await supabase
-        .from('rikshaws')
-        .select('*')
-        .eq('id', saleData.rikshaw_id)
-        .single();
-
-      return { plan, customer, rikshaw };
+      // Return details for the success state and receipt generation
+      return {
+        plan,
+        customer: selectedCustomer,
+        rikshaw: selectedRikshaw,
+        advancePayments // Include individual advance payments in sale details
+      };
     },
     onSuccess: (saleDetails) => {
+      // Invalidate queries to refetch updated data
       queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
       queryClient.invalidateQueries({ queryKey: ['available-rikshaws'] });
-      resetForm();
-      setCreatedSaleDetails(saleDetails);
+      setCreatedSaleDetails(saleDetails); // Store sale details
       toast({
         title: "Sale Completed!",
-        description: "Rickshaw sold and installment plan created successfully!"
+        description: "Rickshaw sold successfully!"
       });
     },
     onError: (error: any) => {
+      // Display error toast
       toast({
         title: "Error",
         description: error.message,
         variant: "destructive"
       });
-    }
+    },
+    onSettled: () => setIsSubmitting(false) // Reset submitting state regardless of success or error
   });
 
-  // Handle rikshaw selection
-  const handleRikshawSelect = (rikshawId: string) => {
-    const selected = rikshaws.find(r => r.id === rikshawId);
-    if (selected) {
-      setSaleData(prev => ({
-        ...prev,
-        rikshaw_id: rikshawId,
-        total_price: selected.price
-      }));
-    }
-  };
-
-  // Handle customer edit
-  const handleEditCustomer = (customer: Customer) => {
-    setEditingCustomer(customer);
-    setIsEditingCustomer(true);
-  };
-
-  // Handle customer update
-  const handleUpdateCustomer = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (editingCustomer) {
-      updateCustomerMutation.mutate(editingCustomer);
-    }
-  };
-
-  // Handle download receipt
+  // Handler to generate and download the sale receipt
   const handleDownloadReceipt = () => {
-    toast({
-      title: "Receipt Download",
-      description: "Receipt will be downloaded shortly..."
-    });
-    // In a real app, this would generate a PDF
-    setTimeout(() => {
-      toast({
-        title: "Receipt Downloaded",
-        description: "Sale receipt has been saved to your device"
-      });
-    }, 2000);
+    if (!createdSaleDetails) return; // Ensure sale details exist
+
+    // Generate HTML for advance payments, marking the first one as "Collected"
+    const advancePaymentsHtml = createdSaleDetails.advancePayments
+      .map((payment: any, index: number) => `
+        <div class="detail-item">
+          <span class="detail-label">Advance ${index + 1} ${index === 0 ? '(Collected)' : ''}:</span> 
+          Rs ${payment.amount.toLocaleString()} on ${new Date(payment.date).toLocaleDateString()}
+        </div>
+      `)
+      .join('');
+    
+    // Open a new window for the receipt
+    const receiptWindow = window.open('', '_blank');
+    if (receiptWindow) {
+      receiptWindow.document.write(`
+        <html>
+      <head>
+        <title>Sale Receipt</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <style>
+          @media print {
+            @page {
+              size: A4 portrait;
+              margin: 12mm;
+            }
+            .no-print {
+              display: none;
+            }
+            body {
+              font-size: 13px;
+              line-height: 1.4;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          }
+        </style>
+      </head>
+      <body class="text-gray-900 font-sans p-6 bg-white max-w-[900px] mx-auto">
+        <div class="text-center border-b-4 border-blue-900 pb-2 mb-4">
+          <h1 class="text-3xl font-extrabold text-blue-900 uppercase">AL-HAMD TRADERS</h1>
+          <p class="text-sm text-gray-600">Railway Road Chowk Shamah, Sargodha</p>
+        </div>
+
+        <div class="border border-blue-800 rounded-md p-5">
+          <h2 class="text-xl font-bold text-blue-800 border-b pb-2 mb-4">Sale Receipt</h2>
+
+          <div class="grid grid-cols-3 gap-4 mb-4">
+            <div><strong>Date:</strong> ${new Date().toLocaleDateString()}</div>
+            <div><strong>Receipt #:</strong> ${createdSaleDetails.plan.id}</div>
+            <div><strong>Agreement Date:</strong> ${new Date(createdSaleDetails.plan.agreement_date).toLocaleDateString()}</div>
+          </div>
+
+          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Customer Details</h3>
+          <div class="grid grid-cols-3 gap-4 mb-4">
+            <div><strong>Name:</strong> ${createdSaleDetails.customer.name}</div>
+            <div><strong>CNIC:</strong> ${createdSaleDetails.customer.cnic}</div>
+            <div><strong>Phone:</strong> ${createdSaleDetails.customer.phone}</div>
+            <div class="col-span-3"><strong>Address:</strong> ${createdSaleDetails.customer.address}</div>
+          </div>
+
+          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Rickshaw Details</h3>
+          <div class="grid grid-cols-3 gap-4 mb-4">
+            <div><strong>Manufacturer:</strong> ${createdSaleDetails.rikshaw.manufacturer}</div>
+            <div><strong>Model:</strong> ${createdSaleDetails.rikshaw.model_name}</div>
+            <div><strong>Type:</strong> ${createdSaleDetails.rikshaw.type}</div>
+            <div><strong>Engine No:</strong> ${createdSaleDetails.rikshaw.engine_number}</div>
+            <div><strong>Chassis No:</strong> ${createdSaleDetails.rikshaw.chassis_number}</div>
+            <div><strong>Reg No:</strong> ${createdSaleDetails.rikshaw.registration_number}</div>
+          </div>
+
+          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Payment Details</h3>
+          <div class="grid grid-cols-3 gap-4 mb-4">
+            <div><strong>Total Price:</strong> Rs ${createdSaleDetails.plan.total_price.toLocaleString()}</div>
+            <div><strong>Advance Collected:</strong> Rs ${createdSaleDetails.plan.advance_paid.toLocaleString()}</div>
+            <div><strong>Monthly:</strong> Rs ${createdSaleDetails.plan.monthly_installment.toLocaleString()}</div>
+            <div><strong>Duration:</strong> ${createdSaleDetails.plan.duration_months} months</div>
+          </div>
+
+          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Advance Installments</h3>
+          <div class="grid grid-cols-3 gap-4 mb-4">
+            ${advancePaymentsHtml}
+          </div>
+
+          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Guarantor Details</h3>
+          <div class="grid grid-cols-3 gap-4 mb-4">
+            <div><strong>Name:</strong> ${createdSaleDetails.customer.guarantor_name}</div>
+            <div><strong>CNIC:</strong> ${createdSaleDetails.customer.guarantor_cnic}</div>
+            <div><strong>Phone:</strong> ${createdSaleDetails.customer.guarantor_phone}</div>
+            <div class="col-span-3"><strong>Address:</strong> ${createdSaleDetails.customer.guarantor_address}</div>
+          </div>
+
+          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Bank Details</h3>
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div><strong>Bank Name:</strong> ${createdSaleDetails.customer.bank_name}</div>
+            <div><strong>Cheque #:</strong> ${createdSaleDetails.customer.cheque_number}</div>
+          </div>
+
+          <div class="text-center font-bold text-blue-900 bg-blue-50 border border-blue-500 rounded-md py-2 mt-3 text-lg">
+            Total Amount: Rs ${createdSaleDetails.plan.total_price.toLocaleString()}
+          </div>
+
+          <div class="flex justify-between mt-8 text-sm text-gray-700">
+            <div class="text-center border-t border-gray-800 pt-2 w-[45%]">Customer Signature</div>
+            <div class="text-center border-t border-gray-800 pt-2 w-[45%]">Manager Signature</div>
+          </div>
+
+          <p class="text-center text-xs text-gray-500 mt-4 border-t pt-2">
+            Thank you for your business! For any queries, contact: 0300-1234567
+          </p>
+        </div>
+
+        <div class="text-center mt-5 no-print">
+          <button onclick="window.print()" class="bg-blue-800 text-white px-5 py-2 rounded-md text-sm hover:bg-blue-900">
+            🖨️ Print Receipt
+          </button>
+        </div>
+      </body>
+    </html>
+      `);
+      receiptWindow.document.close(); // Close the document stream
+    }
   };
 
-  // Reset form
+  // Function to reset the form to its initial state
   const resetForm = () => {
     setSaleData({
       customer_id: '',
       rikshaw_id: '',
       total_price: 0,
-      advance_paid: 0,
+      total_advance_collected: 0, // Reset this field
       monthly_installment: 0,
       duration_months: 12,
-      start_date: format(new Date(), 'yyyy-MM-dd'),
-      guarantor_name: '',
-      guarantor_cnic: '',
-      guarantor_phone: '',
-      guarantor_address: '',
-      bank_name: '',
-      cheque_number: ''
+      agreement_date: new Date().toISOString().split('T')[0], // Reset agreement date
     });
-    setFirstInstallment(0);
-    setInstallmentSchedule([]);
-    setInstallmentError('');
-    setIsGuarantorOpen(false);
-    setIsBankOpen(false);
+    setAdvancePayments([
+      { amount: 0, date: new Date().toISOString().split('T')[0] }
+    ]);
+    setShowPreview(false); // Hide the preview
   };
 
-  // Calculate installment schedule
-  useEffect(() => {
-    if (!saleData.rikshaw_id || saleData.duration_months <= 0 || firstInstallment <= 0) return;
-
-    const schedule = [];
-    const startDate = new Date(saleData.start_date);
-
-    if (saleData.advance_paid > 0) {
-      schedule.push({
-        month: 0,
-        due_date: format(startDate, 'dd MMM yyyy'),
-        amount: saleData.advance_paid.toLocaleString(),
-        status: 'Advance'
-      });
-    }
-
-    for (let i = 1; i <= saleData.duration_months; i++) {
-      const dueDate = addMonths(startDate, i);
-      schedule.push({
-        month: i,
-        due_date: format(dueDate, 'dd MMM yyyy'),
-        amount: firstInstallment.toLocaleString(),
-        status: 'Pending'
-      });
-    }
-
-    const totalInstallments = firstInstallment * saleData.duration_months;
-    const totalAmount = saleData.advance_paid + totalInstallments;
-
-    if (Math.round(totalAmount) !== Math.round(saleData.total_price)) {
-      setInstallmentError(`Total amount (Rs ${totalAmount.toLocaleString()}) does not match rickshaw price (Rs ${saleData.total_price.toLocaleString()})`);
-    } else {
-      setInstallmentError('');
-    }
-
-    setSaleData(prev => ({
-      ...prev,
-      monthly_installment: firstInstallment
-    }));
-
-    setInstallmentSchedule(schedule);
-  }, [firstInstallment, saleData.duration_months, saleData.start_date, saleData.advance_paid, saleData.rikshaw_id]);
-
-  // Auto-fill guarantor details from customer
-  useEffect(() => {
-    if (saleData.customer_id && selectedCustomer?.guarantor_name) {
-      setSaleData(prev => ({
-        ...prev,
-        guarantor_name: selectedCustomer.guarantor_name || '',
-        guarantor_cnic: selectedCustomer.guarantor_cnic || '',
-        guarantor_phone: selectedCustomer.guarantor_phone || '',
-        guarantor_address: selectedCustomer.guarantor_address || ''
-      }));
-    }
-  }, [saleData.customer_id, selectedCustomer]);
-
-  // Validate CNIC
-  useEffect(() => {
-    if (newCustomerData.cnic && newCustomerData.cnic.length !== 13) {
-      setCnicError("CNIC must be exactly 13 digits");
-    } else {
-      setCnicError("");
-    }
-  }, [newCustomerData.cnic]);
-
-  // Validate phone
-  useEffect(() => {
-    if (newCustomerData.phone && newCustomerData.phone.length !== 11) {
-      setPhoneError("Phone must be exactly 11 digits");
-    } else {
-      setPhoneError("");
-    }
-  }, [newCustomerData.phone]);
-
-  // Handle sell rikshaw
-  const handleSellRickshaw = (e: React.FormEvent) => {
-    e.preventDefault();
-
+  // Handler for initiating the sale process
+  const handleSellRickshaw = () => {
+    // Validation checks
     if (!saleData.customer_id || !saleData.rikshaw_id) {
-      toast({ title: "Error", description: "Please select a customer and rickshaw", variant: "destructive" });
+      toast({ 
+        title: "Error", 
+        description: "Please select a customer and rickshaw", 
+        variant: "destructive" 
+      });
       return;
     }
 
-    if (saleData.advance_paid <= 0) {
-      toast({ title: "Error", description: "Advance payment must be greater than 0", variant: "destructive" });
+    if (saleData.total_price <= 0) {
+      toast({ 
+        title: "Error", 
+        description: "Total price must be greater than 0", 
+        variant: "destructive" 
+      });
       return;
     }
 
-    if (saleData.advance_paid > saleData.total_price) {
-      toast({ title: "Error", description: "Advance payment cannot exceed total price", variant: "destructive" });
+    // Validate the first advance payment for 'Total Advance Collected'
+    if (advancePayments[0].amount <= 0 || !advancePayments[0].date) {
+      toast({
+        title: "Error",
+        description: "The first advance payment (Total Advance Collected) must have a positive amount and valid date.",
+        variant: "destructive"
+      });
       return;
     }
 
-    if (firstInstallment <= 0) {
-      toast({ title: "Error", description: "First installment must be greater than 0", variant: "destructive" });
+    if (saleData.total_advance_collected < 0) {
+      toast({ 
+        title: "Error", 
+        description: "Total Advance Collected cannot be negative", 
+        variant: "destructive" 
+      });
       return;
     }
 
-    if (installmentError) {
-      toast({ title: "Error", description: installmentError, variant: "destructive" });
+    if (saleData.total_advance_collected > saleData.total_price) {
+      toast({ 
+        title: "Error", 
+        description: "Total Advance Collected cannot exceed total price", 
+        variant: "destructive" 
+      });
       return;
     }
 
-    createSaleMutation.mutate(saleData);
+    if (saleData.monthly_installment <= 0) {
+      toast({ 
+        title: "Error", 
+        description: "Monthly installment must be greater than 0", 
+        variant: "destructive" 
+      });
+      return;
+    }
+
+    // Validate subsequent advance payments (installments)
+    for (let i = 1; i < advancePayments.length; i++) {
+      if (advancePayments[i].amount <= 0 || !advancePayments[i].date) {
+        toast({
+          title: "Error",
+          description: `Advance installment ${i + 1} must have a positive amount and valid date.`,
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+
+
+    createSaleMutation.mutate(); // Trigger the sale creation mutation
   };
 
-  // Handle create customer
-  const handleCreateCustomer = (e: React.FormEvent) => {
-    e.preventDefault();
-    createCustomerMutation.mutate(newCustomerData);
-  };
-
-  // Start new sale
+  // Function to start a new sale after a successful completion
   const startNewSale = () => {
-    setCreatedSaleDetails(null);
-    resetForm();
+    setCreatedSaleDetails(null); // Clear previous sale details
+    resetForm(); // Reset the form
   };
+
+  // Calculate remaining balance
+  const remainingBalance = saleData.total_price - saleData.total_advance_collected;
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">Sell Rickshaw</h1>
-        <div className="text-sm text-muted-foreground">
+    <div className="space-y-6 max-w-6xl mx-auto">
+      <div className="text-center">
+        <h1 className="text-3xl font-bold text-gray-800">Sell Rickshaw</h1>
+        <p className="text-muted-foreground mt-2">
           Complete rickshaw sales with installment plans
-        </div>
+        </p>
       </div>
 
-      {createdSaleDetails ? (
-        <Card className="border-primary">
-          <CardHeader className="bg-primary text-primary-foreground rounded-t-lg">
-            <CardTitle className="flex items-center gap-2">
-              <Check className="h-6 w-6" />
+      {createdSaleDetails ? ( // Display success message and receipt options if sale is completed
+        <Card className="border-green-500 rounded-lg shadow-lg">
+          <CardHeader className="bg-green-50 border-b border-green-200 p-6 rounded-t-lg">
+            <CardTitle className="flex items-center gap-3 text-green-700 text-2xl">
+              <Check className="h-7 w-7 text-green-600" />
               Sale Completed Successfully!
             </CardTitle>
-            <CardDescription className="text-primary-foreground/90">
-              Rickshaw sold and installment plan created
+            <CardDescription className="text-green-600">
+              The rickshaw has been sold and an installment plan created.
             </CardDescription>
           </CardHeader>
           <CardContent className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-              <div className="bg-muted/30 p-4 rounded-lg">
-                <h3 className="text-lg font-semibold mb-3 border-b pb-2">Customer Details</h3>
-                <div className="space-y-2">
-                  <p><strong>Name:</strong> {createdSaleDetails.customer.name}</p>
-                  <p><strong>CNIC:</strong> {createdSaleDetails.customer.cnic}</p>
-                  <p><strong>Phone:</strong> {createdSaleDetails.customer.phone}</p>
-                  <p><strong>Address:</strong> {createdSaleDetails.customer.address || 'N/A'}</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-gray-800">Customer Details</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Name:</strong> {createdSaleDetails.customer?.name}</p>
+                  <p><strong>Address:</strong> {createdSaleDetails.customer?.address}</p>
+                  <p><strong>CNIC:</strong> {createdSaleDetails.customer?.cnic}</p>
+                  <p><strong>Phone:</strong> {createdSaleDetails.customer?.phone}</p>
                 </div>
               </div>
               
-              <div className="bg-muted/30 p-4 rounded-lg">
-                <h3 className="text-lg font-semibold mb-3 border-b pb-2">Rickshaw Details</h3>
-                <div className="space-y-2">
-                  <p><strong>Model:</strong> {createdSaleDetails.rikshaw.model}</p>
-                  <p><strong>Engine No:</strong> {createdSaleDetails.rikshaw.engine_number}</p>
-                  <p><strong>Price:</strong> Rs {createdSaleDetails.rikshaw.price.toLocaleString()}</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-              <div className="bg-muted/30 p-4 rounded-lg">
-                <h3 className="text-lg font-semibold mb-3 border-b pb-2">Guarantor Details</h3>
-                <div className="space-y-2">
-                  <p><strong>Name:</strong> {createdSaleDetails.plan.guarantor_name}</p>
-                  <p><strong>CNIC:</strong> {createdSaleDetails.plan.guarantor_cnic}</p>
-                  <p><strong>Phone:</strong> {createdSaleDetails.plan.guarantor_phone}</p>
-                  <p><strong>Address:</strong> {createdSaleDetails.plan.guarantor_address || 'N/A'}</p>
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-gray-800">Rickshaw Details</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Manufacturer:</strong> {createdSaleDetails.rikshaw?.manufacturer}</p>
+                  <p><strong>Model Name:</strong> {createdSaleDetails.rikshaw?.model_name}</p>
+                  <p><strong>Engine No:</strong> {createdSaleDetails.rikshaw?.engine_number}</p>
+                  <p><strong>Chassis No:</strong> {createdSaleDetails.rikshaw?.chassis_number}</p>
+                  <p><strong>Registration No:</strong> {createdSaleDetails.rikshaw?.registration_number}</p>
+                  <p><strong>Type:</strong> {createdSaleDetails.rikshaw?.type}</p>
                 </div>
               </div>
               
-              <div className="bg-muted/30 p-4 rounded-lg">
-                <h3 className="text-lg font-semibold mb-3 border-b pb-2">Bank Details</h3>
-                <div className="space-y-2">
-                  <p><strong>Bank Name:</strong> {createdSaleDetails.plan.bank_name}</p>
-                  <p><strong>Cheque Number:</strong> {createdSaleDetails.plan.cheque_number}</p>
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-gray-800">Payment Summary</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Total Price:</strong> Rs {createdSaleDetails.plan?.total_price?.toLocaleString()}</p>
+                  <p><strong>Total Advance Collected:</strong> Rs {createdSaleDetails.plan?.advance_paid?.toLocaleString()}</p>
+                  <p><strong>Monthly Installment:</strong> Rs {createdSaleDetails.plan?.monthly_installment?.toLocaleString()}</p>
+                  <p><strong>Duration:</strong> {createdSaleDetails.plan?.duration_months} months</p>
+                  <p><strong>Agreement Date:</strong> {format(new Date(createdSaleDetails.plan?.agreement_date), 'PPP')}</p>
                 </div>
               </div>
             </div>
             
-            <div className="grid grid-cols-3 gap-4 mb-6">
-              <div className="border border-primary/30 p-4 rounded-lg bg-primary/5">
-                <p className="font-medium text-primary">Advance Paid</p>
-                <p className="text-2xl font-bold">Rs {createdSaleDetails.plan.advance_paid.toLocaleString()}</p>
-              </div>
-              <div className="border border-primary/30 p-4 rounded-lg bg-primary/5">
-                <p className="font-medium text-primary">Monthly Installment</p>
-                <p className="text-2xl font-bold">Rs {createdSaleDetails.plan.monthly_installment.toLocaleString()}</p>
-              </div>
-              <div className="border border-primary/30 p-4 rounded-lg bg-primary/5">
-                <p className="font-medium text-primary">Duration</p>
-                <p className="text-2xl font-bold">{createdSaleDetails.plan.duration_months} months</p>
-              </div>
+            <div className="border border-green-200 p-4 rounded-lg bg-green-50 mb-6 shadow-sm">
+              <h3 className="text-lg font-semibold mb-3 text-green-700">Advance Installments</h3>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-green-800">#</TableHead>
+                    <TableHead className="text-green-800">Amount</TableHead>
+                    <TableHead className="text-green-800">Date</TableHead>
+                    <TableHead className="text-green-800">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {createdSaleDetails.advancePayments?.map((payment: any, index: number) => (
+                    <TableRow key={index}>
+                      <TableCell>{index + 1}</TableCell>
+                      <TableCell>Rs {payment.amount.toLocaleString()}</TableCell>
+                      <TableCell>{new Date(payment.date).toLocaleDateString()}</TableCell>
+                      <TableCell>
+                        {index === 0 ? (
+                          <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
+                            <Check className="h-3 w-3 mr-1" /> Collected
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800">
+                            Pending
+                          </span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
             
-            <div className="flex gap-3 justify-center mt-8">
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
               <Button 
                 variant="outline"
                 onClick={startNewSale}
-                className="px-8"
+                className="px-8 py-2 border-gray-300 text-gray-700 hover:bg-gray-100 rounded-md shadow-sm"
               >
                 New Sale
               </Button>
               <Button 
                 onClick={handleDownloadReceipt}
-                className="px-8 bg-green-600 hover:bg-green-700"
+                className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-md flex items-center gap-2"
               >
+                <Printer className="h-4 w-4" />
                 Download Receipt
               </Button>
             </div>
           </CardContent>
         </Card>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Customer and Rickshaw Selection */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <User className="h-5 w-5" />
-                Customer & Rickshaw Details
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="space-y-3">
-                <Label>Select Customer</Label>
-                <div className="flex flex-col gap-4">
-                  <Select 
-                    value={saleData.customer_id} 
-                    onValueChange={(value) => setSaleData({...saleData, customer_id: value})}
-                  >
-                    <SelectTrigger>
-                      {loadingCustomers ? (
-                        <div className="flex items-center gap-2">
-                          
-                          <span>Loading customers...</span>
-                        </div>
-                      ) : (
-                        <SelectValue placeholder="Select a customer" />
+      ) : showPreview ? ( // Display preview of sale details
+        <Card className="rounded-lg shadow-lg">
+          <CardHeader className="bg-blue-50 border-b border-blue-200 p-6 rounded-t-lg">
+            <CardTitle className="flex items-center gap-3 text-blue-700 text-2xl">
+              Preview Sale Details
+            </CardTitle>
+            <CardDescription className="text-blue-600">Review the information before finalizing the sale</CardDescription>
+          </CardHeader>
+          <CardContent className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-blue-700">Customer Details</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Name:</strong> {selectedCustomer?.name}</p>
+                  <p><strong>Address:</strong> {selectedCustomer?.address}</p>
+                  <p><strong>CNIC:</strong> {selectedCustomer?.cnic}</p>
+                  <p><strong>Phone:</strong> {selectedCustomer?.phone}</p>
+                </div>
+              </div>
+              
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-blue-700">Rickshaw Details</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Manufacturer:</strong> {selectedRikshaw?.manufacturer}</p>
+                  <p><strong>Model Name:</strong> {selectedRikshaw?.model_name}</p>
+                  <p><strong>Engine No:</strong> {selectedRikshaw?.engine_number}</p>
+                  <p><strong>Chassis No:</strong> {selectedRikshaw?.chassis_number}</p>
+                  <p><strong>Registration No:</strong> {selectedRikshaw?.registration_number}</p>
+                  <p><strong>Type:</strong> {selectedRikshaw?.type}</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-blue-700">Guarantor Details</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Name:</strong> {selectedCustomer?.guarantor_name}</p>
+                  <p><strong>CNIC:</strong> {selectedCustomer?.guarantor_cnic}</p>
+                  <p><strong>Address:</strong> {selectedCustomer?.guarantor_address}</p>
+                  <p><strong>Phone:</strong> {selectedCustomer?.guarantor_phone}</p>
+                </div>
+              </div>
+              
+              <div className="border border-gray-200 p-4 rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-semibold mb-3 text-blue-700">Bank Details</h3>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <p><strong>Bank Name:</strong> {selectedCustomer?.bank_name}</p>
+                  <p><strong>Cheque Number:</strong> {selectedCustomer?.cheque_number}</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="border border-blue-200 p-4 rounded-lg bg-blue-50 mb-6 shadow-sm">
+              <h3 className="text-lg font-semibold mb-3 text-blue-700">Payment Details</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-gray-700"><strong>Total Price:</strong></p>
+                  <p className="text-xl font-bold text-gray-900">Rs {saleData.total_price.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-700"><strong>Total Advance Collected:</strong></p>
+                  <p className="text-xl font-bold text-gray-900">Rs {saleData.total_advance_collected.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-700"><strong>Monthly Installment:</strong></p>
+                  <p className="text-xl font-bold text-gray-900">Rs {saleData.monthly_installment.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-700"><strong>Duration:</strong></p>
+                  <p className="text-xl font-bold text-gray-900">{saleData.duration_months} months</p>
+                </div>
+                <div>
+                  <p className="text-gray-700"><strong>Agreement Date:</strong></p>
+                  <p className="text-xl font-bold text-gray-900">{format(new Date(saleData.agreement_date), 'PPP')}</p>
+                </div>
+                <div className="md:col-span-1">
+                  <p className="text-gray-700"><strong>Remaining Balance:</strong></p>
+                  <p className="text-xl font-bold text-green-600">
+                    Rs {remainingBalance.toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="border border-blue-200 p-4 rounded-lg bg-blue-50 mb-6 shadow-sm">
+              <h3 className="text-lg font-semibold mb-3 text-blue-700">Advance Installments</h3>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-blue-800">#</TableHead>
+                    <TableHead className="text-blue-800">Amount</TableHead>
+                    <TableHead className="text-blue-800">Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {advancePayments.map((payment, index) => (
+                    <TableRow key={index}>
+                      <TableCell>{index + 1}</TableCell>
+                      <TableCell>Rs {payment.amount.toLocaleString()}</TableCell>
+                      <TableCell>{new Date(payment.date).toLocaleDateString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            
+            <div className="flex flex-col sm:flex-row gap-3 justify-end">
+              <Button 
+                variant="outline"
+                onClick={() => setShowPreview(false)}
+                className="px-8 py-2 text-gray-700 hover:bg-gray-100 rounded-md shadow-sm"
+              >
+                Back to Edit
+              </Button>
+              <Button 
+                onClick={handleSellRickshaw}
+                disabled={isSubmitting}
+                className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-md"
+              >
+                {isSubmitting ? "Processing Sale..." : "Confirm Sale"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : ( // Display the main sale form
+        <Card className="rounded-lg shadow-lg">
+          <CardHeader className="p-6">
+            <CardTitle className="flex items-center gap-3 text-gray-800 text-2xl">
+              <Car className="h-6 w-6 text-blue-600" />
+              Rickshaw Sale Information
+            </CardTitle>
+            <CardDescription className="text-gray-600">Fill in the details to complete the sale</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6 p-6">
+            <div className="space-y-3">
+              <Label htmlFor="customer-select" className="text-gray-700">Select Customer *</Label>
+              <Select 
+                value={saleData.customer_id} 
+                onValueChange={(value) => setSaleData({...saleData, customer_id: value})}
+              >
+                <SelectTrigger id="customer-select" className="w-full rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500">
+                  {loadingCustomers ? (
+                    <span className="text-gray-500">Loading customers...</span>
+                  ) : (
+                    <SelectValue placeholder="Select a customer" />
+                  )}
+                </SelectTrigger>
+                <SelectContent className="rounded-md shadow-lg">
+                  {customers.map(customer => (
+                    <SelectItem key={customer.id} value={customer.id} className="hover:bg-gray-100 cursor-pointer">
+                      {customer.name} ({customer.cnic})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-3">
+              <Label htmlFor="rickshaw-select" className="text-gray-700">Select Rickshaw *</Label>
+              <Select 
+                value={saleData.rikshaw_id} 
+                onValueChange={(value) => setSaleData({...saleData, rikshaw_id: value})}
+              >
+                <SelectTrigger id="rickshaw-select" className="w-full rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500">
+                  {loadingRikshaws ? (
+                    <span className="text-gray-500">Loading rikshaws...</span>
+                  ) : (
+                    <SelectValue placeholder="Select a rickshaw" />
+                  )}
+                </SelectTrigger>
+                <SelectContent className="rounded-md shadow-lg">
+                  {rikshaws.map(rikshaw => (
+                    <SelectItem key={rikshaw.id} value={rikshaw.id} className="hover:bg-gray-100 cursor-pointer">
+                      <div className="flex flex-col">
+                        <span>{rikshaw.manufacturer} - {rikshaw.model_name}</span>
+                        <span className="text-xs text-muted-foreground text-gray-500">
+                          ENG: {rikshaw.engine_number} | CHS: {rikshaw.chassis_number}
+                        </span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {saleData.customer_id && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-gray-200">
+                <div className="border border-gray-200 p-4 rounded-lg bg-gray-50 shadow-sm">
+                  <h3 className="text-lg font-semibold mb-3 text-gray-800">Customer Details</h3>
+                  <div className="space-y-2 text-sm text-gray-700">
+                    <p><strong>Name:</strong> {selectedCustomer?.name}</p>
+                    <p><strong>Address:</strong> {selectedCustomer?.address}</p>
+                    <p><strong>CNIC:</strong> {selectedCustomer?.cnic}</p>
+                    <p><strong>Phone:</strong> {selectedCustomer?.phone}</p>
+                  </div>
+                </div>
+                
+                <div className="border border-gray-200 p-4 rounded-lg bg-gray-50 shadow-sm">
+                  <h3 className="text-lg font-semibold mb-3 text-gray-800">Guarantor & Bank Details</h3>
+                  <div className="space-y-2 text-sm text-gray-700">
+                    <p><strong>Guarantor:</strong> {selectedCustomer?.guarantor_name}</p>
+                    <p><strong>Bank:</strong> {selectedCustomer?.bank_name}</p>
+                    <p><strong>Cheque:</strong> {selectedCustomer?.cheque_number}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {saleData.rikshaw_id && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-gray-200">
+                <div className="border border-gray-200 p-4 rounded-lg bg-gray-50 shadow-sm">
+                  <h3 className="text-lg font-semibold mb-3 text-gray-800">Rickshaw Specifications</h3>
+                  <div className="space-y-2 text-sm text-gray-700">
+                    <p><strong>Manufacturer:</strong> {selectedRikshaw?.manufacturer}</p>
+                    <p><strong>Model Name:</strong> {selectedRikshaw?.model_name}</p>
+                    <p><strong>Type:</strong> {selectedRikshaw?.type}</p>
+                  </div>
+                </div>
+                
+                <div className="border border-gray-200 p-4 rounded-lg bg-gray-50 shadow-sm">
+                  <h3 className="text-lg font-semibold mb-3 text-gray-800">Identification Numbers</h3>
+                  <div className="space-y-2 text-sm text-gray-700">
+                    <p><strong>Engine No:</strong> {selectedRikshaw?.engine_number}</p>
+                    <p><strong>Chassis No:</strong> {selectedRikshaw?.chassis_number}</p>
+                    <p><strong>Registration No:</strong> {selectedRikshaw?.registration_number}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-4 pt-4 border-t border-gray-200">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="total-price" className="text-gray-700">Total Price (Rs) *</Label>
+                  <Input
+                    id="total-price"
+                    type="number"
+                    value={saleData.total_price || ''}
+                    onChange={(e) => setSaleData({
+                      ...saleData, 
+                      total_price: parseFloat(e.target.value) || 0
+                    })}
+                    required
+                    className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+                
+                <div>
+                  <Label htmlFor="agreement-date" className="text-gray-700">Agreement Date *</Label>
+                  <Input
+                    id="agreement-date"
+                    type="date"
+                    value={saleData.agreement_date}
+                    onChange={(e) => setSaleData({
+                      ...saleData,
+                      agreement_date: e.target.value
+                    })}
+                    required
+                    className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <Label className="text-gray-700">Advance Payments</Label>
+                  {advancePayments.length < 4 && (
+                    <Button 
+                      size="sm" 
+                      variant="outline"
+                      onClick={addAdvancePayment}
+                      className="px-4 py-2 text-blue-600 border-blue-600 hover:bg-blue-50 rounded-md shadow-sm flex items-center gap-1"
+                    >
+                      <Plus className="h-4 w-4" /> Add Payment
+                    </Button>
+                  )}
+                </div>
+                
+                <div className="space-y-3">
+                  {advancePayments.map((payment, index) => (
+                    <div key={index} className="flex flex-col sm:flex-row gap-3 items-end">
+                      <div className="flex-1 w-full">
+                        <Label className="text-gray-700">Amount (Rs) {index === 0 ? '*' : ''}</Label>
+                        <Input
+                          type="number"
+                          value={payment.amount || ''}
+                          onChange={(e) => handleAdvancePaymentChange(
+                            index, 
+                            'amount', 
+                            parseFloat(e.target.value) || 0
+                          )}
+                          required
+                          className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="flex-1 w-full">
+                        <Label className="text-gray-700">Date {index === 0 ? '*' : ''}</Label>
+                        <Input
+                          type="date"
+                          value={payment.date}
+                          onChange={(e) => handleAdvancePaymentChange(
+                            index, 
+                            'date', 
+                            e.target.value
+                          )}
+                          required
+                          className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                        />
+                      </div>
+                      {advancePayments.length > 1 && (
+                        <Button 
+                          variant="destructive" 
+                          size="icon"
+                          onClick={() => removeAdvancePayment(index)}
+                          className="mb-1 rounded-md shadow-sm"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
                       )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="monthly-installment" className="text-gray-700">Monthly Installment (Rs) *</Label>
+                  <Input
+                    id="monthly-installment"
+                    type="number"
+                    value={saleData.monthly_installment || ''}
+                    onChange={(e) => setSaleData({
+                      ...saleData, 
+                      monthly_installment: parseFloat(e.target.value) || 0
+                    })}
+                    required
+                    className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+                
+                <div>
+                  <Label htmlFor="duration-months" className="text-gray-700">Duration (Months) *</Label>
+                  <Select 
+                    value={saleData.duration_months.toString()} 
+                    onValueChange={(value) => setSaleData({
+                      ...saleData, 
+                      duration_months: parseInt(value)
+                    })}
+                  >
+                    <SelectTrigger id="duration-months" className="w-full rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500">
+                      <SelectValue placeholder="Select duration" />
                     </SelectTrigger>
-                    <SelectContent>
-                      {customers.map(customer => (
-                        <SelectItem key={customer.id} value={customer.id}>
-                          {customer.name} ({customer.cnic})
-                        </SelectItem>
-                      ))}
+                    <SelectContent className="rounded-md shadow-lg">
+                      <SelectItem value="6" className="hover:bg-gray-100 cursor-pointer">6 Months</SelectItem>
+                      <SelectItem value="12" className="hover:bg-gray-100 cursor-pointer">12 Months</SelectItem>
+                      <SelectItem value="18" className="hover:bg-gray-100 cursor-pointer">18 Months</SelectItem>
+                      <SelectItem value="24" className="hover:bg-gray-100 cursor-pointer">24 Months</SelectItem>
+                      <SelectItem value="36" className="hover:bg-gray-100 cursor-pointer">36 Months</SelectItem>
                     </SelectContent>
                   </Select>
-                  
-                  {saleData.customer_id && selectedCustomer && (
-                    <div className="mt-2 p-4 border rounded-lg bg-muted/30">
-                      <div className="flex justify-between items-center mb-2">
-                        <h4 className="font-semibold">Selected Customer</h4>
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          onClick={() => handleEditCustomer(selectedCustomer)}
-                        >
-                          Edit
-                        </Button>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div><span className="font-medium">Name:</span> {selectedCustomer.name}</div>
-                        <div><span className="font-medium">CNIC:</span> {selectedCustomer.cnic}</div>
-                        <div><span className="font-medium">Phone:</span> {selectedCustomer.phone}</div>
-                        <div><span className="font-medium">Address:</span> {selectedCustomer.address || 'N/A'}</div>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {isEditingCustomer && editingCustomer && (
-                    <div className="mt-4 p-4 border rounded-lg bg-muted/30">
-                      <h3 className="text-lg font-semibold mb-3">Edit Customer</h3>
-                      <form onSubmit={handleUpdateCustomer} className="space-y-4">
-                        <div>
-                          <Label>Customer Full Name *</Label>
-                          <Input
-                            value={editingCustomer.name}
-                            onChange={(e) => setEditingCustomer({...editingCustomer, name: e.target.value})}
-                            required
-                          />
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <Label>Customer CNIC *</Label>
-                            <Input
-                              value={editingCustomer.cnic}
-                              onChange={(e) => setEditingCustomer({...editingCustomer, cnic: e.target.value})}
-                              required
-                            />
-                            {editingCustomer.cnic.length !== 13 && (
-                              <p className="text-red-500 text-xs mt-1">CNIC must be 13 digits</p>
-                            )}
-                          </div>
-                          <div>
-                            <Label>Customer Phone *</Label>
-                            <Input
-                              value={editingCustomer.phone}
-                              onChange={(e) => setEditingCustomer({...editingCustomer, phone: e.target.value})}
-                              required
-                            />
-                            {editingCustomer.phone.length !== 11 && (
-                              <p className="text-red-500 text-xs mt-1">Phone must be 11 digits</p>
-                            )}
-                          </div>
-                        </div>
-                        
-                        <div>
-                          <Label>Customer Address</Label>
-                          <Input
-                            value={editingCustomer.address || ''}
-                            onChange={(e) => setEditingCustomer({...editingCustomer, address: e.target.value})}
-                          />
-                        </div>
-                        
-                        <div className="flex gap-2">
-                          <Button 
-                            type="submit"
-                            disabled={updateCustomerMutation.isLoading}
-                            className="flex-1"
-                          >
-                            {updateCustomerMutation.isLoading ? "Saving..." : "Save Changes"}
-                          </Button>
-                          <Button 
-                            variant="outline"
-                            onClick={() => setIsEditingCustomer(false)}
-                            className="flex-1"
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </form>
-                    </div>
-                  )}
-                  
-                  <div className="border-t pt-4">
-                    <h3 className="text-lg font-semibold mb-2">Or Create New Customer</h3>
-                    <form onSubmit={handleCreateCustomer} className="space-y-4">
-                      <div>
-                        <Label>Customer Full Name *</Label>
-                        <Input
-                          value={newCustomerData.name}
-                          onChange={(e) => setNewCustomerData({...newCustomerData, name: e.target.value})}
-                          required
-                        />
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label>Customer CNIC *</Label>
-                          <Input
-                            value={newCustomerData.cnic}
-                            onChange={(e) => setNewCustomerData({...newCustomerData, cnic: e.target.value})}
-                            required
-                          />
-                          {cnicError && (
-                            <p className="text-red-500 text-xs mt-1">{cnicError}</p>
-                          )}
-                        </div>
-                        <div>
-                          <Label>Customer Phone *</Label>
-                          <Input
-                            value={newCustomerData.phone}
-                            onChange={(e) => setNewCustomerData({...newCustomerData, phone: e.target.value})}
-                            required
-                          />
-                          {phoneError && (
-                            <p className="text-red-500 text-xs mt-1">{phoneError}</p>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <div>
-                        <Label>Customer Address</Label>
-                        <Input
-                          value={newCustomerData.address}
-                          onChange={(e) => setNewCustomerData({...newCustomerData, address: e.target.value})}
-                        />
-                      </div>
-                      
-                      <Button 
-                        type="submit"
-                        disabled={createCustomerMutation.isLoading}
-                        className="w-full"
-                      >
-                        {createCustomerMutation.isLoading ? "Creating..." : "Create Customer"}
-                      </Button>
-                    </form>
-                  </div>
                 </div>
               </div>
-
-              <div className="space-y-3">
-                <Label>Select Rickshaw</Label>
-                <Select 
-                  value={saleData.rikshaw_id} 
-                  onValueChange={handleRikshawSelect}
-                >
-                  <SelectTrigger>
-                    {loadingRikshaws ? (
-                      <div className="flex items-center gap-2">
-                     
-                        <span>Loading rikshaws...</span>
-                      </div>
-                    ) : (
-                      <SelectValue placeholder="Select a rickshaw" />
-                    )}
-                  </SelectTrigger>
-                  <SelectContent>
-                    {rikshaws.map(rikshaw => (
-                      <SelectItem key={rikshaw.id} value={rikshaw.id}>
-                        {rikshaw.model} (ENG: {rikshaw.engine_number}) - Rs {rikshaw.price.toLocaleString()}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {saleData.rikshaw_id && (
-                <div className="space-y-4 pt-4 border-t">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label>Total Price (Rs)</Label>
-                      <Input
-                        value={saleData.total_price.toLocaleString()}
-                        disabled
-                      />
-                    </div>
-                    <div>
-                      <Label>Advance Paid (Rs)*</Label>
-                      <Input
-                        type="number"
-                        value={saleData.advance_paid}
-                        onChange={(e) => {
-                          const advance = parseFloat(e.target.value) || 0;
-                          setSaleData({
-                            ...saleData, 
-                            advance_paid: advance
-                          });
-                        }}
-                        required
-                      />
-                    </div>
-                  </div>
-                  
-                  <div className="pt-2">
-                    <Label>Remaining Balance (Rs)</Label>
-                    <div className="text-2xl font-bold">
-                      Rs {remainingBalance.toLocaleString()}
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label>First Installment Amount (Rs)*</Label>
-                      <Input
-                        type="number"
-                        value={firstInstallment}
-                        onChange={(e) => setFirstInstallment(parseFloat(e.target.value) || 0)}
-                        required
-                      />
-                      {installmentError && (
-                        <p className="text-red-500 text-sm mt-1">{installmentError}</p>
-                      )}
-                    </div>
-                    <div>
-                      <Label>Duration (Months)*</Label>
-                      <Select 
-                        value={saleData.duration_months.toString()} 
-                        onValueChange={(value) => setSaleData({
-                          ...saleData, 
-                          duration_months: parseInt(value)
-                        })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select duration" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="6">6 Months</SelectItem>
-                          <SelectItem value="12">12 Months</SelectItem>
-                          <SelectItem value="18">18 Months</SelectItem>
-                          <SelectItem value="24">24 Months</SelectItem>
-                          <SelectItem value="36">36 Months</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <Label>Start Date</Label>
-                    <Input
-                      type="date"
-                      value={saleData.start_date}
-                      onChange={(e) => setSaleData({
-                        ...saleData, 
-                        start_date: e.target.value
-                      })}
-                    />
-                  </div>
-                  
-                  <Collapsible 
-                    open={isGuarantorOpen} 
-                    onOpenChange={setIsGuarantorOpen}
-                    className="pt-4"
-                  >
-                    <CollapsibleTrigger asChild>
-                      <div className="flex items-center justify-between p-2 bg-muted/30 rounded-lg cursor-pointer">
-                        <h3 className="text-lg font-semibold">Guarantor Details</h3>
-                        {isGuarantorOpen ? (
-                          <ChevronUp className="h-5 w-5" />
-                        ) : (
-                          <ChevronDown className="h-5 w-5" />
-                        )}
-                      </div>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-4 space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label>Full Name *</Label>
-                          <Input
-                            value={saleData.guarantor_name}
-                            onChange={(e) => setSaleData({...saleData, guarantor_name: e.target.value})}
-                            required
-                          />
-                        </div>
-                        <div>
-                          <Label>CNIC *</Label>
-                          <Input
-                            value={saleData.guarantor_cnic}
-                            onChange={(e) => setSaleData({...saleData, guarantor_cnic: e.target.value})}
-                            required
-                          />
-                        </div>
-                        <div>
-                          <Label>Phone *</Label>
-                          <Input
-                            value={saleData.guarantor_phone}
-                            onChange={(e) => setSaleData({...saleData, guarantor_phone: e.target.value})}
-                            required
-                          />
-                        </div>
-                        <div>
-                          <Label>Address</Label>
-                          <Input
-                            value={saleData.guarantor_address}
-                            onChange={(e) => setSaleData({...saleData, guarantor_address: e.target.value})}
-                          />
-                        </div>
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                  
-                  <Collapsible 
-                    open={isBankOpen} 
-                    onOpenChange={setIsBankOpen}
-                    className="pt-2"
-                  >
-                    <CollapsibleTrigger asChild>
-                      <div className="flex items-center justify-between p-2 bg-muted/30 rounded-lg cursor-pointer">
-                        <h3 className="text-lg font-semibold">Bank Details</h3>
-                        {isBankOpen ? (
-                          <ChevronUp className="h-5 w-5" />
-                        ) : (
-                          <ChevronDown className="h-5 w-5" />
-                        )}
-                      </div>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label>Bank Name *</Label>
-                          <Input
-                            value={saleData.bank_name}
-                            onChange={(e) => setSaleData({...saleData, bank_name: e.target.value})}
-                            required
-                          />
-                        </div>
-                        <div>
-                          <Label>Cheque Number *</Label>
-                          <Input
-                            value={saleData.cheque_number}
-                            onChange={(e) => setSaleData({...saleData, cheque_number: e.target.value})}
-                            required
-                          />
-                        </div>
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Installment Schedule */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Calendar className="h-5 w-5" />
-                Installment Schedule
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {installmentSchedule.length > 0 ? (
-                <div className="border rounded-lg">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>#</TableHead>
-                        <TableHead>Due Date</TableHead>
-                        <TableHead>Amount (Rs)</TableHead>
-                        <TableHead>Status</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {installmentSchedule.map((installment, index) => (
-                        <TableRow key={index}>
-                          <TableCell>{installment.month === 0 ? 'Adv' : installment.month}</TableCell>
-                          <TableCell>{installment.due_date}</TableCell>
-                          <TableCell>{installment.amount}</TableCell>
-                          <TableCell>
-                            <span className={cn(
-                              "px-2 py-1 rounded-full text-xs",
-                              installment.status === 'Advance' 
-                                ? 'bg-blue-100 text-blue-800' 
-                                : 'bg-yellow-100 text-yellow-800'
-                            )}>
-                              {installment.status}
-                            </span>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {installmentSchedule.length > 1 && (
-                        <TableRow className="bg-gray-50 font-medium">
-                          <TableCell colSpan={2} className="text-right">Total:</TableCell>
-                          <TableCell>
-                            Rs {(
-                              saleData.advance_paid + 
-                              (firstInstallment * saleData.duration_months)
-                            ).toLocaleString()}
-                          </TableCell>
-                          <TableCell></TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                  <DollarSign className="h-12 w-12 mb-4" />
-                  <p>Complete the form to generate installment schedule</p>
-                </div>
-              )}
               
-              {installmentSchedule.length > 0 && (
-                <div className="mt-6 flex justify-end">
-                  <Button 
-                    size="lg" 
-                    onClick={handleSellRickshaw}
-                    disabled={createSaleMutation.isLoading || !!installmentError}
-                    className={cn(
-                      "px-8",
-                      createSaleMutation.isLoading ? "bg-gray-400" : "bg-green-600 hover:bg-green-700"
-                    )}
-                  >
-                    {createSaleMutation.isLoading ? (
-                      <div className="flex items-center gap-2">
-                       
-                        Processing Sale...
-                      </div>
-                    ) : (
-                      <>
-                        <Check className="h-5 w-5 mr-2" />
-                        Complete Sale
-                      </>
-                    )}
-                  </Button>
+              <div className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-gray-700">Total Advance Collected (Rs)</Label>
+                  <div className="text-xl font-bold text-blue-600 mt-1">
+                    Rs {saleData.total_advance_collected.toLocaleString()}
+                  </div>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                <div>
+                  <Label className="text-gray-700">Remaining Balance (Rs)</Label>
+                  <div className="text-xl font-bold text-green-600 mt-1">
+                    Rs {remainingBalance.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex justify-end pt-6">
+              <Button 
+                size="lg" 
+                onClick={() => setShowPreview(true)}
+                disabled={!saleData.customer_id || !saleData.rikshaw_id || saleData.total_price <= 0 || advancePayments[0].amount <= 0 || !advancePayments[0].date || advancePayments.some((p, i) => i > 0 && (p.amount <= 0 || !p.date))}
+                className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-md"
+              >
+                Preview Sale
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

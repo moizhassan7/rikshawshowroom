@@ -10,42 +10,45 @@ import { Plus, Edit, Trash2, Search, Eye, XCircle, Loader2 } from 'lucide-react'
 import { Textarea } from '@/components/ui/textarea';
 import { supabase } from '@/integrations/supabase/client';
 
+// Define the Customer interface
 interface Customer {
   id: string;
   name: string;
   cnic: string;
-  phone: string; // Stored without hyphens
+  phone: string;
   address: string;
   assigned_rickshaw: string | null;
   guarantor_name: string | null;
   guarantor_cnic: string | null;
-  guarantor_phone: string | null; // Stored without hyphens
+  guarantor_phone: string | null;
   guarantor_address: string | null;
   bank_name: string | null;
   cheque_number: string | null;
-  created_at: string;
+  created_at: string; // This is the customer record creation date
   updated_at: string;
+  agreement_date: string | null; // Field to store the latest agreement date from installment_plans
 }
 
+// Define the CustomerFormData interface for form input
 interface CustomerFormData {
   name: string;
   cnic: string;
-  phone: string; // No hyphens here
+  phone: string;
   address: string;
   guarantor_name: string | null;
   guarantor_cnic: string | null;
-  guarantor_phone: string | null; // No hyphens here
+  guarantor_phone: string | null;
   guarantor_address: string | null;
   bank_name: string | null;
   cheque_number: string | null;
 }
 
-// Helper function to remove hyphens from phone numbers
-const cleanPhoneNumber = (number: string | null): string => {
+// Helper function to remove hyphens from phone numbers and ensure it's a string
+const cleanPhoneNumber = (number: string | null | undefined): string => {
   return number ? number.replace(/-/g, '') : '';
 };
 
-// Error Boundary Component (kept as provided)
+// Error Boundary Component (kept as provided, good practice)
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: React.ReactNode }) {
     super(props);
@@ -76,11 +79,11 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
         </div>
       );
     }
-
     return this.props.children;
   }
 }
 
+// Props interface for CustomerForm
 interface CustomerFormProps {
   formData: CustomerFormData;
   setFormData: React.Dispatch<React.SetStateAction<CustomerFormData>>;
@@ -91,7 +94,7 @@ interface CustomerFormProps {
   onCancel: () => void;
 }
 
-// Separate CustomerForm component
+// Separate CustomerForm component (memoized for performance)
 const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
   formData,
   setFormData,
@@ -101,6 +104,11 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
   isLoading,
   onCancel
 }) => {
+  // Helper to update specific field in formData
+  const handleInputChange = useCallback((field: keyof CustomerFormData, value: string | null) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  }, [setFormData]);
+
   return (
     <Card className="mt-6">
       <CardHeader>
@@ -121,7 +129,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="name"
                 value={formData.name || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                onChange={(e) => handleInputChange('name', e.target.value)}
                 required
               />
               {formErrors.name && <p className="text-red-500 text-sm">{formErrors.name}</p>}
@@ -131,7 +139,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="cnic"
                 value={formData.cnic || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, cnic: e.target.value }))}
+                onChange={(e) => handleInputChange('cnic', e.target.value)}
                 placeholder="12345-1234567-1"
                 required
               />
@@ -143,19 +151,19 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
             <Input
               id="phone"
               value={formData.phone || ''}
-              onChange={(e) => setFormData(prev => ({ ...prev, phone: cleanPhoneNumber(e.target.value) }))} // Clean here
-              placeholder="e.g., 03001234567" // Updated placeholder
+              onChange={(e) => handleInputChange('phone', cleanPhoneNumber(e.target.value))} // Clean here
+              placeholder="e.g., 03001234567"
               required
             />
             {formErrors.phone && <p className="text-red-500 text-sm">{formErrors.phone}</p>}
           </div>
-          
+
           <div className="space-y-2">
             <Label htmlFor="address">Address *</Label>
             <Textarea
               id="address"
               value={formData.address || ''}
-              onChange={(e) => setFormData(prev => ({ ...prev, address: e.target.value }))}
+              onChange={(e) => handleInputChange('address', e.target.value)}
               rows={3}
               required
             />
@@ -169,7 +177,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="guarantor_name"
                 value={formData.guarantor_name || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, guarantor_name: e.target.value }))}
+                onChange={(e) => handleInputChange('guarantor_name', e.target.value)}
               />
             </div>
             <div className="space-y-2">
@@ -177,7 +185,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="guarantor_cnic"
                 value={formData.guarantor_cnic || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, guarantor_cnic: e.target.value }))}
+                onChange={(e) => handleInputChange('guarantor_cnic', e.target.value)}
                 placeholder="12345-1234567-1"
               />
               {formErrors.guarantor_cnic && <p className="text-red-500 text-sm">{formErrors.guarantor_cnic}</p>}
@@ -189,8 +197,8 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="guarantor_phone"
                 value={formData.guarantor_phone || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, guarantor_phone: cleanPhoneNumber(e.target.value) }))} // Clean here
-                placeholder="e.g., 03001234567" // Updated placeholder
+                onChange={(e) => handleInputChange('guarantor_phone', cleanPhoneNumber(e.target.value))} // Clean here
+                placeholder="e.g., 03001234567"
               />
               {formErrors.guarantor_phone && <p className="text-red-500 text-sm">{formErrors.guarantor_phone}</p>}
             </div>
@@ -199,7 +207,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Textarea
                 id="guarantor_address"
                 value={formData.guarantor_address || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, guarantor_address: e.target.value }))}
+                onChange={(e) => handleInputChange('guarantor_address', e.target.value)}
                 rows={2}
               />
             </div>
@@ -212,7 +220,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="bank_name"
                 value={formData.bank_name || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, bank_name: e.target.value }))}
+                onChange={(e) => handleInputChange('bank_name', e.target.value)}
               />
             </div>
             <div className="space-y-2">
@@ -220,13 +228,13 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               <Input
                 id="cheque_number"
                 value={formData.cheque_number || ''}
-                onChange={(e) => setFormData(prev => ({ ...prev, cheque_number: e.target.value }))}
+                onChange={(e) => handleInputChange('cheque_number', e.target.value)}
               />
             </div>
           </div>
 
           <div className="flex gap-2 justify-end mt-6">
-            <Button type="button" variant="outline" onClick={onCancel}>
+            <Button type="button" variant="outline" onClick={onCancel} disabled={isLoading}>
               Cancel
             </Button>
             <Button
@@ -248,8 +256,14 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
   );
 });
 
-// Separate CustomerDetailsDisplay component
-const CustomerDetailsDisplay = React.memo(({ customer, onClose }: { customer: Customer, onClose: () => void }) => (
+// Props interface for CustomerDetailsDisplay
+interface CustomerDetailsDisplayProps {
+  customer: Customer;
+  onClose: () => void;
+}
+
+// Separate CustomerDetailsDisplay component (memoized for performance)
+const CustomerDetailsDisplay: React.FC<CustomerDetailsDisplayProps> = React.memo(({ customer, onClose }) => (
   <Card className="mt-6">
     <CardHeader className="flex flex-row items-center justify-between">
       <CardTitle>Customer Details</CardTitle>
@@ -313,18 +327,16 @@ const CustomerDetailsDisplay = React.memo(({ customer, onClose }: { customer: Cu
         </div>
 
         <div className="space-y-1 col-span-2">
-          <p className="font-semibold">Added On:</p>
-          <p>{new Date(customer.created_at).toLocaleDateString()} at {new Date(customer.created_at).toLocaleTimeString()}</p>
-        </div>
-        <div className="space-y-1 col-span-2">
-          <p className="font-semibold">Last Updated:</p>
-          <p>{new Date(customer.updated_at).toLocaleDateString()} at {new Date(customer.updated_at).toLocaleTimeString()}</p>
+          <p className="font-semibold">Agreement Date:</p>
+          {/* Display agreement_date from installment_plans */}
+          <p>{customer.agreement_date ? new Date(customer.agreement_date).toLocaleDateString() : 'N/A'}</p>
         </div>
       </div>
     </CardContent>
   </Card>
 ));
 
+// Main Customers Component
 const Customers = () => {
   const ITEMS_PER_PAGE = 15;
   const [searchTerm, setSearchTerm] = useState('');
@@ -333,7 +345,7 @@ const Customers = () => {
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  
+
   const [formData, setFormData] = useState<CustomerFormData>({
     name: '',
     cnic: '',
@@ -350,72 +362,98 @@ const Customers = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // useCallback for fetchCustomers to ensure stable reference
   const fetchCustomers = useCallback(async ({ queryKey }: { queryKey: any[] }) => {
     const [_key, currentSearchTerm, currentPage, limit] = queryKey;
     const offset = currentPage * limit;
 
-    let query = supabase.from('customers').select('*', { count: 'exact' });
+    // Fetch customers along with their related installment plans
+    let query = supabase
+      .from('customers')
+      .select('*, installment_plans(agreement_date, created_at)', { count: 'exact' });
 
     if (currentSearchTerm) {
-        // Updated search to match cleaned phone numbers in DB
-        query = query.or(`name.ilike.%${currentSearchTerm}%,cnic.ilike.%${currentSearchTerm}%,phone.ilike.%${cleanPhoneNumber(currentSearchTerm)}%`);
+      // Use cleanPhoneNumber for search term when searching against phone numbers
+      const cleanedSearchTerm = cleanPhoneNumber(currentSearchTerm);
+      query = query.or(`name.ilike.%${currentSearchTerm}%,cnic.ilike.%${currentSearchTerm}%,phone.ilike.%${cleanedSearchTerm}%`);
     }
 
     const { data, error, count } = await query
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (error) throw new Error(error.message);
-    return { data: data as Customer[], count: count as number };
+
+    // Process the fetched data to include the latest agreement_date for each customer
+    const customersWithPlans = data as Array<Customer & { installment_plans: Array<{ agreement_date: string, created_at: string }> }>;
+    const processedCustomers = customersWithPlans.map(customer => {
+      // Find the latest installment plan based on its created_at timestamp
+      const latestPlan = customer.installment_plans
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        [0]; // Get the first (latest) one after sorting
+
+      return {
+        ...customer,
+        // Assign the agreement_date from the latest plan, or null if no plans
+        agreement_date: latestPlan ? latestPlan.agreement_date : null
+      };
+    });
+
+    return { data: processedCustomers, count: count as number };
   }, []);
 
   const { data, isLoading, isFetching, isError, error } = useQuery({
     queryKey: ['customers', searchTerm, page, ITEMS_PER_PAGE],
     queryFn: fetchCustomers,
     placeholderData: (previousData) => previousData,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 5 * 60 * 1000, // 5 minutes
     keepPreviousData: true,
-    retry: 1,
-    refetchOnWindowFocus: false
+    retry: 1, // Retry once on failure
+    refetchOnWindowFocus: false // Prevent refetching on window focus
   });
 
   const customers = data?.data || [];
   const totalCustomersCount = data?.count || 0;
   const hasMore = (page + 1) * ITEMS_PER_PAGE < totalCustomersCount;
 
+  // Reset page to 0 when search term changes
   useEffect(() => {
     setPage(0);
   }, [searchTerm]);
 
+  // Validation logic
   const validateForm = useCallback(async (): Promise<boolean> => {
     const errors: Record<string, string> = {};
-    
+
     if (!formData.name.trim()) errors.name = 'Name is required';
     if (!formData.cnic.trim()) errors.cnic = 'CNIC is required';
     if (!formData.phone.trim()) errors.phone = 'Phone is required';
     if (!formData.address.trim()) errors.address = 'Address is required';
-    
+
     // CNIC format validation (xxxxx-xxxxxxx-x)
     if (formData.cnic && !/^\d{5}-\d{7}-\d{1}$/.test(formData.cnic)) {
       errors.cnic = 'CNIC must be in format: xxxxx-xxxxxxx-x';
     } else if (formData.cnic) {
+      // Check CNIC uniqueness
       const { data: existingCustomer, error: cnicError } = await supabase
         .from('customers')
         .select('id')
         .eq('cnic', formData.cnic)
-        .maybeSingle();
+        .maybeSingle(); // Use maybeSingle for better handling of no results or multiple
 
       if (cnicError) console.error('Error checking CNIC uniqueness:', cnicError);
 
+      // If an existing customer with this CNIC is found and it's not the current customer being edited
       if (existingCustomer && (editingCustomer ? existingCustomer.id !== editingCustomer.id : true)) {
         errors.cnic = 'This CNIC is already registered.';
       }
     }
-    
+
     // Phone format validation (11 digits, starts with 03)
-    if (formData.phone && !/^03\d{9}$/.test(formData.phone)) { // Regex updated for 11 digits, starting with 03, no hyphens
+    if (formData.phone && !/^03\d{9}$/.test(formData.phone)) {
       errors.phone = 'Phone must be an 11-digit number starting with 03 (e.g., 03001234567)';
     } else if (formData.phone) {
+      // Check Phone uniqueness
       const { data: existingCustomer, error: phoneError } = await supabase
         .from('customers')
         .select('id')
@@ -428,31 +466,31 @@ const Customers = () => {
         errors.phone = 'This Phone Number is already registered.';
       }
     }
-    
+
     const guarantorFields = [
       formData.guarantor_name,
       formData.guarantor_cnic,
       formData.guarantor_phone,
       formData.guarantor_address
     ];
-    
+
     const hasAnyGuarantorFieldFilled = guarantorFields.some(field => !!field?.trim());
-    const areAllGuarantorFieldsFilled = guarantorFields.every(field => !!field?.trim());
+    const areAllGuarantorFieldsFilled = guarantorFields.every(field => !field || field.trim()); // Changed to check if all non-empty are trimmed
 
     if (hasAnyGuarantorFieldFilled && !areAllGuarantorFieldsFilled) {
       errors.guarantor = 'All guarantor fields (Name, CNIC, Phone, Address) must be filled if any are provided.';
     }
-    
+
     // Validate guarantor CNIC format if provided
     if (formData.guarantor_cnic && !/^\d{5}-\d{7}-\d{1}$/.test(formData.guarantor_cnic)) {
       errors.guarantor_cnic = 'Guarantor CNIC must be in format: xxxxx-xxxxxxx-x';
     }
-    
+
     // Validate guarantor phone format if provided (11 digits, starts with 03)
-    if (formData.guarantor_phone && !/^03\d{9}$/.test(formData.guarantor_phone)) { // Regex updated
+    if (formData.guarantor_phone && !/^03\d{9}$/.test(formData.guarantor_phone)) {
       errors.guarantor_phone = 'Guarantor phone must be an 11-digit number starting with 03 (e.g., 03001234567)';
     }
-    
+
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   }, [formData, editingCustomer]);
@@ -460,15 +498,19 @@ const Customers = () => {
 
   const addCustomerMutation = useMutation({
     mutationFn: async (customerData: CustomerFormData) => {
+      // Validation is now handled inside the mutation fn
       const isValid = await validateForm();
-      if (!isValid) throw new Error('Validation failed');
-      
+      if (!isValid) {
+        // Throw an error to trigger onError and display toast
+        throw new Error('Please correct the highlighted fields.');
+      }
+
       const { data, error } = await supabase
         .from('customers')
         .insert([customerData])
         .select()
         .single();
-      
+
       if (error) throw new Error(error.message);
       return data;
     },
@@ -494,7 +536,9 @@ const Customers = () => {
   const updateCustomerMutation = useMutation({
     mutationFn: async ({ id, ...customerData }: CustomerFormData & { id: string }) => {
       const isValid = await validateForm();
-      if (!isValid) throw new Error('Validation failed');
+      if (!isValid) {
+        throw new Error('Please correct the highlighted fields.');
+      }
 
       const { data, error } = await supabase
         .from('customers')
@@ -502,7 +546,7 @@ const Customers = () => {
         .eq('id', id)
         .select()
         .single();
-      
+
       if (error) throw new Error(error.message);
       return data;
     },
@@ -532,7 +576,7 @@ const Customers = () => {
         .from('customers')
         .delete()
         .eq('id', id);
-      
+
       if (error) throw new Error(error.message);
     },
     onSuccess: () => {
@@ -552,6 +596,7 @@ const Customers = () => {
     }
   });
 
+  // Resets the form data and errors
   const resetForm = useCallback(() => {
     setFormData({
       name: '',
@@ -581,22 +626,16 @@ const Customers = () => {
     resetForm();
   }, [resetForm]);
 
+  // Form submission handler for adding customers
   const handleAddSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    const isValid = await validateForm();
-    if (isValid) {
-      addCustomerMutation.mutate(formData);
-    } else {
-      toast({
-        title: "Validation Error",
-        description: "Please correct the highlighted fields.",
-        variant: "destructive"
-      });
-    }
-  }, [formData, addCustomerMutation, validateForm, toast]);
+    // Validation is now run directly inside the mutation function
+    addCustomerMutation.mutate(formData);
+  }, [formData, addCustomerMutation]);
 
+  // Handler for editing a customer
   const handleEdit = useCallback((customer: Customer) => {
-    setSelectedCustomer(customer);
+    setSelectedCustomer(null); // Ensure details view is closed
     setEditingCustomer(customer);
     setFormData({
       name: customer.name,
@@ -611,31 +650,26 @@ const Customers = () => {
       cheque_number: customer.cheque_number,
     });
     setIsFormVisible(true);
-    setFormErrors({});
+    setFormErrors({}); // Clear any previous form errors
   }, []);
 
+  // Form submission handler for updating customers
   const handleUpdateSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingCustomer) {
-      const isValid = await validateForm();
-      if (isValid) {
-        updateCustomerMutation.mutate({ ...formData, id: editingCustomer.id });
-      } else {
-        toast({
-          title: "Validation Error",
-          description: "Please correct the highlighted fields.",
-          variant: "destructive"
-        });
-      }
+      // Validation is now run directly inside the mutation function
+      updateCustomerMutation.mutate({ ...formData, id: editingCustomer.id });
     }
-  }, [editingCustomer, formData, updateCustomerMutation, validateForm, toast]);
+  }, [editingCustomer, formData, updateCustomerMutation]);
 
+  // Handler for deleting a customer
   const handleDelete = useCallback((id: string) => {
-    if (window.confirm('Are you sure you want to delete this customer?')) {
+    if (window.confirm('Are you sure you want to delete this customer? This action cannot be undone.')) {
       deleteCustomerMutation.mutate(id);
     }
   }, [deleteCustomerMutation]);
 
+  // Handler for viewing customer details
   const handleViewDetails = useCallback((customer: Customer) => {
     setIsFormVisible(false);
     setEditingCustomer(null);
@@ -643,6 +677,7 @@ const Customers = () => {
     setFormErrors({});
   }, []);
 
+  // Handler for closing customer details view
   const handleCloseDetails = useCallback(() => {
     setSelectedCustomer(null);
     setIsFormVisible(false);
@@ -650,14 +685,12 @@ const Customers = () => {
     resetForm();
   }, [resetForm]);
 
-  // The filteredCustomers state is no longer needed as filtering is handled server-side
-  // const filteredCustomers = customers.filter(...);
-
   return (
     <ErrorBoundary>
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <h1 className="text-3xl font-bold">Customer Management</h1>
+          {/* Show Add Customer button only when no form or details are visible */}
           {!isFormVisible && !selectedCustomer && (
             <Button onClick={handleAddClick} aria-label="Add customer">
               <Plus className="h-4 w-4 mr-2" />
@@ -666,6 +699,7 @@ const Customers = () => {
           )}
         </div>
 
+        {/* Conditionally render CustomerForm */}
         {isFormVisible && (
           <CustomerForm
             formData={formData}
@@ -678,15 +712,17 @@ const Customers = () => {
           />
         )}
 
+        {/* Conditionally render CustomerDetailsDisplay */}
         {!isFormVisible && selectedCustomer && (
           <CustomerDetailsDisplay customer={selectedCustomer} onClose={handleCloseDetails} />
         )}
-
+        
+        {/* Main Customer List Card */}
         <Card>
           <CardHeader>
             <CardTitle>Customer List</CardTitle>
             <div className="flex items-center space-x-2 mt-2">
-              <Search className="h-4 w-4" />
+              <Search className="h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Search customers by name, CNIC, or phone..."
                 value={searchTerm}
@@ -701,7 +737,10 @@ const Customers = () => {
           </CardHeader>
           <CardContent>
             {isLoading && !customers.length ? (
-              <div className="text-center py-8">Loading customers...</div>
+              <div className="text-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
+                <p className="mt-2 text-muted-foreground">Loading customers...</p>
+              </div>
             ) : isError ? (
               <div className="text-center py-8 text-red-500">
                 Error loading customers: {error?.message}
@@ -721,7 +760,7 @@ const Customers = () => {
                     <TableHead>CNIC</TableHead>
                     <TableHead>Phone</TableHead>
                     <TableHead>Address</TableHead>
-                    <TableHead>Added On</TableHead>
+                    <TableHead>Agreement Date</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -737,9 +776,9 @@ const Customers = () => {
                       <TableRow key={customer.id}>
                         <TableCell className="font-medium">{customer.name}</TableCell>
                         <TableCell>{customer.cnic}</TableCell>
-                        <TableCell>{customer.phone}</TableCell> {/* Display without hyphens */}
+                        <TableCell>{customer.phone}</TableCell>
                         <TableCell className="max-w-xs truncate">{customer.address}</TableCell>
-                        <TableCell>{new Date(customer.created_at).toLocaleDateString()}</TableCell>
+                        <TableCell>{customer.agreement_date ? new Date(customer.agreement_date).toLocaleDateString() : 'N/A'}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
                             <Button
@@ -773,17 +812,18 @@ const Customers = () => {
                     ))
                   )}
                   {isFetching && customers.length > 0 && (
-                      <TableRow>
-                          <TableCell colSpan={6} className="text-center py-4">
-                              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
-                              <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
-                          </TableCell>
-                      </TableRow>
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-4">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
+                        <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
+                      </TableCell>
+                    </TableRow>
                   )}
                 </TableBody>
               </Table>
             )}
-            
+
+            {/* Pagination controls */}
             {hasMore && (
               <div className="text-center mt-6">
                 <Button onClick={() => setPage(prev => prev + 1)} disabled={isFetching}>

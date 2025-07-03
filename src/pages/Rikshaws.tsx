@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react'; // Added useEffect and useCallback
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState, useCallback, useEffect } from 'react';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'; // Changed to useInfiniteQuery
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,12 +9,12 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from '@/hooks/use-toast';
-import { Car, Plus, Search, Edit, Trash2, Eye, XCircle, Loader2 } from 'lucide-react'; // Added Loader2 for loading state
+import { Car, Plus, Search, Edit, Trash2, Eye, XCircle, Loader2 } from 'lucide-react';
 
 // Define the exact type as per the new Supabase table schema
 interface Rikshaw {
   id: string;
-  manufacturer: 'New Asia' | 'Safara' | 'Rozgar' | 'TezRaftar' | string;
+  manufacturer: 'New Asia' | 'Salaar' | 'Rozgar' | 'TezRaftar' | string;
   model_name: string;
   type: 'Loader 100 CC' | 'Loader 150 CC' | 'Rikshaw 200 CC Family' | 'Rikshaw 200 CC Open 6-seater';
   engine_number: string;
@@ -52,7 +52,7 @@ interface RikshawFormProps {
 }
 
 const RikshawForm = ({ onSubmit, isLoading, onCancel, formData, setFormData, editingRikshaw, validationErrors }: RikshawFormProps) => {
-  const manufacturers = ['New Asia', 'Safara', 'Rozgar', 'TezRaftar'];
+  const manufacturers = ['New Asia', 'Salaar', 'Rozgar', 'TezRaftar'];
   const types = ['Loader 100 CC', 'Loader 150 CC', 'Rikshaw 200 CC Family', 'Rikshaw 200 CC Open 6-seater'];
   const categories = ['new', 'old'];
   const availabilities = ['unsold', 'sold'];
@@ -100,7 +100,7 @@ const RikshawForm = ({ onSubmit, isLoading, onCancel, formData, setFormData, edi
               {validationErrors.model_name && <p className="text-destructive text-sm mt-1">{validationErrors.model_name}</p>}
             </div>
           </div>
-          
+
           <div className="space-y-2">
             <Label htmlFor="type">Type *</Label>
             <Select
@@ -200,7 +200,7 @@ const RikshawForm = ({ onSubmit, isLoading, onCancel, formData, setFormData, edi
               {validationErrors.availability && <p className="text-destructive text-sm mt-1">{validationErrors.availability}</p>}
             </div>
           </div>
-          
+
           <div className="flex gap-2 justify-end mt-6">
             <Button type="button" variant="outline" onClick={onCancel}>
               Cancel
@@ -278,12 +278,8 @@ const RikshawDetailsDisplay = ({ rikshaw, onClose }: RikshawDetailsDisplayProps)
           </Badge>
         </div>
         <div className="space-y-1 col-span-2">
-          <p className="font-semibold">Added On:</p>
+          <p className="font-semibold">Date of Addition to Inventory</p>
           <p>{new Date(rikshaw.created_at).toLocaleDateString()} at {new Date(rikshaw.created_at).toLocaleTimeString()}</p>
-        </div>
-        <div className="space-y-1 col-span-2">
-          <p className="font-semibold">Last Updated:</p>
-          <p>{new Date(rikshaw.updated_at).toLocaleDateString()} at {new Date(rikshaw.updated_at).toLocaleTimeString()}</p>
         </div>
       </div>
     </CardContent>
@@ -294,15 +290,15 @@ const RikshawDetailsDisplay = ({ rikshaw, onClose }: RikshawDetailsDisplayProps)
 // Rikshaws Main Component
 // -------------------------------------------------------------------------
 const Rikshaws = () => {
-  const ITEMS_PER_PAGE = 15; // Define items per page
+  const ITEMS_PER_PAGE = 15;
   const [searchTerm, setSearchTerm] = useState('');
   const [availabilityFilter, setAvailabilityFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all'); // State for type filter
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [editingRikshaw, setEditingRikshaw] = useState<Rikshaw | null>(null);
   const [selectedRikshaw, setSelectedRikshaw] = useState<Rikshaw | null>(null);
   const [validationErrors, setValidationErrors] = useState<{ [key: string]: string }>({});
-  const [page, setPage] = useState(0); // Current page for pagination
 
   const [formData, setFormData] = useState<RikshawFormData>({
     manufacturer: '',
@@ -317,52 +313,74 @@ const Rikshaws = () => {
 
   const queryClient = useQueryClient();
 
-  // Optimized fetch function for useQuery with pagination and search
-  const fetchRikshaws = useCallback(async ({ queryKey }: { queryKey: any[] }) => {
-    const [_key, currentSearchTerm, currentAvailabilityFilter, currentCategoryFilter, currentPage, limit] = queryKey;
-    const offset = currentPage * limit;
+  const types = ['Loader 100 CC', 'Loader 150 CC', 'Rikshaw 200 CC Family', 'Rikshaw 200 CC Open 6-seater']; // Available types for filter
 
-    let query = supabase.from('rikshaws').select('*', { count: 'exact' }); // Request exact count
+  // Optimized fetch function for useInfiniteQuery
+  const fetchRikshaws = useCallback(async ({ queryKey, pageParam = 0 }: { queryKey: any[]; pageParam?: number }) => {
+    const [_key, currentSearchTerm, currentAvailabilityFilter, currentCategoryFilter, currentTypeFilter, limit] = queryKey;
+    const offset = pageParam * limit;
 
-    // Apply filters and search to the ENTIRE dataset before pagination
+    let query = supabase.from('rikshaws').select('*', { count: 'exact' });
+
     if (currentSearchTerm) {
-        query = query.or(`manufacturer.ilike.%${currentSearchTerm}%,model_name.ilike.%${currentSearchTerm}%,engine_number.ilike.%${currentSearchTerm}%,chassis_number.ilike.%${currentSearchTerm}%,registration_number.ilike.%${currentSearchTerm}%,type.ilike.%${currentSearchTerm}%`);
+      query = query.or(`manufacturer.ilike.%${currentSearchTerm}%,model_name.ilike.%${currentSearchTerm}%,engine_number.ilike.%${currentSearchTerm}%,chassis_number.ilike.%${currentSearchTerm}%,registration_number.ilike.%${currentSearchTerm}%,type.ilike.%${currentSearchTerm}%`);
     }
 
     if (currentAvailabilityFilter !== 'all') {
-        query = query.eq('availability', currentAvailabilityFilter);
+      query = query.eq('availability', currentAvailabilityFilter);
     }
 
     if (currentCategoryFilter !== 'all') {
-        query = query.eq('category', currentCategoryFilter);
+      query = query.eq('category', currentCategoryFilter);
     }
 
-    // Apply pagination
+    if (currentTypeFilter !== 'all') {
+      query = query.eq('type', currentTypeFilter);
+    }
+
     const { data, error, count } = await query
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1); // Supabase range is inclusive
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (error) throw error;
-    return { data: data as Rikshaw[], count: count as number };
+    return { data: data as Rikshaw[], count: count as number, nextPage: pageParam + 1 };
   }, []);
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['rikshaws', searchTerm, availabilityFilter, categoryFilter, page, ITEMS_PER_PAGE],
+  const {
+    data,
+    isLoading,
+    isFetching,
+    isFetchingNextPage,
+    fetchNextPage,
+    hasNextPage,
+    refetch // Added refetch
+  } = useInfiniteQuery({
+    queryKey: ['rikshaws', searchTerm, availabilityFilter, categoryFilter, typeFilter, ITEMS_PER_PAGE],
     queryFn: fetchRikshaws,
-    placeholderData: (previousData) => previousData, // Keep previous data while fetching new page/filters
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    keepPreviousData: true, // Keep previously fetched data visible
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const totalItemsFetched = lastPage.nextPage * ITEMS_PER_PAGE;
+      if (totalItemsFetched < lastPage.count) {
+        return lastPage.nextPage;
+      }
+      return undefined;
+    },
+    select: (data) => ({
+      pages: data.pages,
+      // Flatten pages into a single array of rikshaws
+      data: data.pages.flatMap(page => page.data),
+      // Keep the total count from the first page or last page if available
+      count: data.pages[0]?.count || 0,
+      pageParams: data.pageParams
+    }),
+    staleTime: 5 * 60 * 1000,
   });
 
-  const rikshaws = data?.data || [];
+  const allRikshaws = data?.data || [];
   const totalRikshawsCount = data?.count || 0;
-  const hasMore = (page + 1) * ITEMS_PER_PAGE < totalRikshawsCount;
 
-  // Reset page to 0 whenever filters or search term changes
-  useEffect(() => {
-    setPage(0);
-  }, [searchTerm, availabilityFilter, categoryFilter]);
-
+  // No need for a manual useEffect to reset page for filters with useInfiniteQuery,
+  // as changing the queryKey automatically causes a refetch from initialPageParam.
 
   const validateForm = async (data: RikshawFormData, isEditMode: boolean = false) => {
     const errors: { [key: string]: string } = {};
@@ -377,51 +395,50 @@ const Rikshaws = () => {
 
     // Unique checks for Engine Number and Chassis Number
     if (data.engine_number) {
-        const { data: existingEngine, error: engineError } = await supabase
-            .from('rikshaws')
-            .select('id')
-            .eq('engine_number', data.engine_number)
-            .maybeSingle();
-        
-        if (engineError) console.error('Error checking engine number uniqueness:', engineError);
-        
-        if (existingEngine && (isEditMode ? existingEngine.id !== editingRikshaw?.id : true)) {
-            errors.engine_number = 'This Engine Number already exists.';
-        }
+      const { data: existingEngine, error: engineError } = await supabase
+        .from('rikshaws')
+        .select('id')
+        .eq('engine_number', data.engine_number)
+        .maybeSingle();
+
+      if (engineError) console.error('Error checking engine number uniqueness:', engineError);
+
+      if (existingEngine && (isEditMode ? existingEngine.id !== editingRikshaw?.id : true)) {
+        errors.engine_number = 'This Engine Number already exists.';
+      }
     }
 
     if (data.chassis_number) {
-        const { data: existingChassis, error: chassisError } = await supabase
-            .from('rikshaws')
-            .select('id')
-            .eq('chassis_number', data.chassis_number)
-            .maybeSingle();
+      const { data: existingChassis, error: chassisError } = await supabase
+        .from('rikshaws')
+        .select('id')
+        .eq('chassis_number', data.chassis_number)
+        .maybeSingle();
 
-        if (chassisError) console.error('Error checking chassis number uniqueness:', chassisError);
+      if (chassisError) console.error('Error checking chassis number uniqueness:', chassisError);
 
-        if (existingChassis && (isEditMode ? existingChassis.id !== editingRikshaw?.id : true)) {
-            errors.chassis_number = 'This Chassis Number already exists.';
-        }
+      if (existingChassis && (isEditMode ? existingChassis.id !== editingRikshaw?.id : true)) {
+        errors.chassis_number = 'This Chassis Number already exists.';
+      }
     }
 
     if (data.registration_number) {
-        const { data: existingReg, error: regError } = await supabase
-            .from('rikshaws')
-            .select('id')
-            .eq('registration_number', data.registration_number)
-            .maybeSingle();
+      const { data: existingReg, error: regError } = await supabase
+        .from('rikshaws')
+        .select('id')
+        .eq('registration_number', data.registration_number)
+        .maybeSingle();
 
-        if (regError) console.error('Error checking registration number uniqueness:', regError);
+      if (regError) console.error('Error checking registration number uniqueness:', regError);
 
-        if (existingReg && (isEditMode ? existingReg.id !== editingRikshaw?.id : true)) {
-            errors.registration_number = 'This Registration Number already exists.';
-        }
+      if (existingReg && (isEditMode ? existingReg.id !== editingRikshaw?.id : true)) {
+        errors.registration_number = 'This Registration Number already exists.';
+      }
     }
 
     setValidationErrors(errors);
     return Object.keys(errors).length === 0;
   };
-
 
   const addRikshawMutation = useMutation({
     mutationFn: async (newRikshaw: RikshawFormData) => {
@@ -439,12 +456,12 @@ const Rikshaws = () => {
         }])
         .select()
         .single();
-      
+
       if (error) throw error;
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch first page
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch all filtered data
       setIsFormVisible(false);
       setSelectedRikshaw(null);
       resetForm();
@@ -480,12 +497,12 @@ const Rikshaws = () => {
         .eq('id', id)
         .select()
         .single();
-      
+
       if (error) throw error;
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch relevant data
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch all filtered data
       setIsFormVisible(false);
       setEditingRikshaw(null);
       setSelectedRikshaw(null);
@@ -511,11 +528,11 @@ const Rikshaws = () => {
         .from('rikshaws')
         .delete()
         .eq('id', id);
-      
+
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch all filtered data
       setSelectedRikshaw(null);
       toast({
         title: "Success",
@@ -637,7 +654,9 @@ const Rikshaws = () => {
     }
   };
 
-  if (isLoading && !rikshaws.length) { // Only show full loading screen on initial load
+  // Condition to show initial loading state
+  // Check if it's the very first load and no data has been fetched yet
+  if (isLoading && !allRikshaws.length) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">
@@ -655,7 +674,7 @@ const Rikshaws = () => {
           <h1 className="text-3xl font-bold tracking-tight">Rikshaws</h1>
           <p className="text-muted-foreground">Manage your rikshaw inventory</p>
         </div>
-        
+
         {!isFormVisible && !selectedRikshaw && (
           <Button onClick={handleAddClick}>
             <Plus className="h-4 w-4 mr-2" />
@@ -665,9 +684,9 @@ const Rikshaws = () => {
       </div>
 
       {isFormVisible && (
-        <RikshawForm 
+        <RikshawForm
           onSubmit={handleSubmit}
-          isLoading={addRikshawMutation.isPending || updateRikshawMutation.isPending} 
+          isLoading={addRikshawMutation.isPending || updateRikshawMutation.isPending}
           onCancel={handleFormCancel}
           formData={formData}
           setFormData={setFormData}
@@ -687,7 +706,7 @@ const Rikshaws = () => {
             Inventory Overview
           </CardTitle>
           <CardDescription>
-            Total: {totalRikshawsCount} rikshaws (Showing {rikshaws.length} of {totalRikshawsCount})
+            Total: {totalRikshawsCount} rikshaws (Showing {allRikshaws.length} of {totalRikshawsCount})
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -723,6 +742,18 @@ const Rikshaws = () => {
                 <SelectItem value="sold">Sold</SelectItem>
               </SelectContent>
             </Select>
+            {/* New Type Filter */}
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Filter by Type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                {types.map((type) => (
+                  <SelectItem key={type} value={type}>{type}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="rounded-md border">
@@ -737,13 +768,13 @@ const Rikshaws = () => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rikshaws.length === 0 && !isFetching ? ( // Check if no items and not fetching more
+                {allRikshaws.length === 0 && !isFetching && !isFetchingNextPage ? (
                   <TableRow>
                     <TableCell colSpan={5} className="text-center py-12">
                       <Car className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
                       <p className="text-muted-foreground mb-2">No rikshaws found</p>
                       <p className="text-sm text-muted-foreground">
-                        {searchTerm || availabilityFilter !== 'all' || categoryFilter !== 'all'
+                        {searchTerm || availabilityFilter !== 'all' || categoryFilter !== 'all' || typeFilter !== 'all'
                           ? 'Try adjusting your search or filters'
                           : 'Add your first rikshaw to get started'
                         }
@@ -751,7 +782,7 @@ const Rikshaws = () => {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  rikshaws.map((rikshaw) => (
+                  allRikshaws.map((rikshaw) => (
                     <TableRow key={rikshaw.id}>
                       <TableCell className="font-medium">{rikshaw.manufacturer}</TableCell>
                       <TableCell>{rikshaw.type}</TableCell>
@@ -790,22 +821,22 @@ const Rikshaws = () => {
                     </TableRow>
                   ))
                 )}
-                {isFetching && rikshaws.length > 0 && ( // Show loader when fetching more, if items already exist
+                {isFetchingNextPage && allRikshaws.length > 0 && ( // Show loader when fetching more, if items already exist
                     <TableRow>
-                        <TableCell colSpan={5} className="text-center py-4">
-                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
-                            <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
-                        </TableCell>
+                      <TableCell colSpan={5} className="text-center py-4">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
+                        <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
+                      </TableCell>
                     </TableRow>
                 )}
               </TableBody>
             </Table>
           </div>
-          
-          {hasMore && (
+
+          {hasNextPage && (
             <div className="text-center mt-6">
-              <Button onClick={() => setPage(prev => prev + 1)} disabled={isFetching}>
-                {isFetching ? (
+              <Button onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+                {isFetchingNextPage ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Loading...
@@ -817,7 +848,7 @@ const Rikshaws = () => {
             </div>
           )}
 
-          {!hasMore && rikshaws.length > 0 && !isFetching && (
+          {!hasNextPage && allRikshaws.length > 0 && !isFetching && !isFetchingNextPage && (
             <p className="text-center text-muted-foreground text-sm mt-6">
               You've reached the end of the list.
             </p>

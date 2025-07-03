@@ -53,7 +53,7 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<div>Installment Page - Coming Soon</div>} />
+              <Route index element={<Installments/>} />
             </Route>
             {/* Add the new route */}
             <Route path="/sell-rickshaw" element={
@@ -61,7 +61,7 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<SellRickshaw />} />
+              <Route index element={<SellRickshaw/>} />
             </Route>
             <Route path="/reports" element={
               <ProtectedRoute>

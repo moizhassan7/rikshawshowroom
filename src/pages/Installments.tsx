@@ -1,33 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Check, Calendar, DollarSign, User, Car, Search } from 'lucide-react';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { format, addMonths } from 'date-fns';
-import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc } from 'lucide-react';
+import { format, addMonths, isBefore, isAfter, parseISO } from 'date-fns';
+import { cn } from '@/lib/utils';
 
+// Interface definitions for data structures
 interface Customer {
   id: string;
   name: string;
+  address: string;
   cnic: string;
   phone: string;
-  address: string;
+  guarantor_name: string;
+  guarantor_cnic: string;
+  guarantor_phone: string;
+  guarantor_address: string;
+  bank_name: string;
+  cheque_number: string;
 }
 
 interface Rikshaw {
   id: string;
-  model: string;
+  manufacturer: string;
+  model_name: string;
   engine_number: string;
-  price: number;
-  status: string;
+  chassis_number: string;
+  registration_number: string;
+  type: string;
+  availability: string; // 'sold', 'available'
+}
+
+interface AdvancePayment {
+  amount: number;
+  date: string;
 }
 
 interface InstallmentPlan {
@@ -35,621 +49,1121 @@ interface InstallmentPlan {
   customer_id: string;
   rikshaw_id: string;
   total_price: number;
-  advance_paid: number;
+  advance_paid: number; // Total advance amount agreed upon - This will now be the sum of all initial advance payments
+  advance_payments: AdvancePayment[]; // Array of initial individual advance payments made at sale time
   monthly_installment: number;
   duration_months: number;
-  start_date: string;
-  created_at: string;
-  customers: Customer;
-  rikshaws: Rikshaw;
+  guarantor_name: string;
+  guarantor_cnic: string;
+  guarantor_phone: string;
+  guarantor_address: string;
+  bank_name: string;
+  cheque_number: string;
+  rikshaw_details: {
+    manufacturer: string;
+    model_name: string;
+    engine_number: string;
+    chassis_number: string;
+    registration_number: string;
+    type: string;
+  };
+  customers: Customer; // Nested customer details
+  rikshaws: Rikshaw; // Nested rikshaw details
+  created_at: string; // Sale date
+  total_paid_monthly_installments?: number; // Aggregate of only monthly payments
 }
 
-interface Installment {
+interface InstallmentPayment {
   id: string;
-  plan_id: string;
-  installment_number: number;
-  due_date: string;
-  amount: number;
-  status: 'paid' | 'unpaid';
-  paid_date: string | null;
-  payment_method: 'cash' | 'bank' | null;
-  collector: string | null;
+  installment_plan_id: string;
+  payment_date: string; // ISO string 'YYYY-MM-DD'
+  amount_paid: number;
+  received_by: string;
+  payment_type: 'monthly' | 'advance_adjustment';
+  installment_number?: number | null; // New field for monthly installment number
+  created_at: string;
 }
 
-const InstallmentsPage = () => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
-  const [selectedPlan, setSelectedPlan] = useState<InstallmentPlan | null>(null);
-  const [formData, setFormData] = useState({
-    customer_id: '',
-    rikshaw_id: '',
-    total_price: '',
-    advance_paid: '',
-    monthly_installment: '',
-    duration_months: '12',
-    start_date: format(new Date(), 'yyyy-MM-dd')
-  });
-
+// Main InstallmentPage Component
+const InstallmentPage = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Fetch customers
-  const { data: customers = [] } = useQuery({
-    queryKey: ['customers'],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('customers')
-        .select('*')
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      return data;
-    }
-  });
+  // State for search, sort, and detail view
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState('created_at');
+  const [sortOrder, setSortOrder] = useState('desc');
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
 
-  // Fetch available rikshaws
-  const { data: rikshaws = [] } = useQuery({
-    queryKey: ['available-rikshaws'],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('rikshaws')
-        .select('*')
-        .eq('status', 'available')
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      return data;
-    }
-  });
-
-  // Fetch installment plans with customer and rikshaw details
-  const { data: installmentPlans = [], isLoading } = useQuery({
+  // Fetch all installment plans with customer and rikshaw details
+  const { data: installmentPlans = [], isLoading: loadingPlans, error: plansError } = useQuery<InstallmentPlan[]>({
     queryKey: ['installment-plans'],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('installment_plans')
         .select(`
           *,
-          customers:customer_id (id, name, cnic, phone),
-          rikshaws:rikshaw_id (id, model, engine_number, price)
+          customers!inner (name, cnic, phone, address, guarantor_name, guarantor_cnic, guarantor_phone, guarantor_address, bank_name, cheque_number),
+          rikshaws!inner (manufacturer, model_name, registration_number, engine_number, chassis_number, type)
         `)
         .order('created_at', { ascending: false });
-      
       if (error) throw error;
-      return data;
+      return data as InstallmentPlan[];
     }
   });
 
-  // Fetch installments for a specific plan
-  const { data: installments = [] } = useQuery({
-    queryKey: ['installments', selectedPlan?.id],
+  // Fetch all payments for all plans for status calculation
+  const { data: allInstallmentPayments = [], isLoading: loadingAllPayments, error: allPaymentsError } = useQuery<InstallmentPayment[]>({
+    queryKey: ['all-installment-payments'],
     queryFn: async () => {
-      if (!selectedPlan) return [];
-      
       const { data, error } = await supabase
-        .from('installments')
-        .select('*')
-        .eq('plan_id', selectedPlan.id)
-        .order('installment_number', { ascending: true });
-      
+        .from('installment_payments')
+        .select('*');
       if (error) throw error;
-      return data;
-    },
-    enabled: !!selectedPlan
+      return data as InstallmentPayment[];
+    }
   });
 
-  // Create installment plan mutation
-  const createPlanMutation = useMutation({
-    mutationFn: async (planData: any) => {
-      // Create the installment plan
-      const { data: plan, error: planError } = await supabase
-        .from('installment_plans')
-        .insert([{
-          customer_id: planData.customer_id,
-          rikshaw_id: planData.rikshaw_id,
-          total_price: parseFloat(planData.total_price),
-          advance_paid: parseFloat(planData.advance_paid),
-          monthly_installment: parseFloat(planData.monthly_installment),
-          duration_months: parseInt(planData.duration_months),
-          start_date: planData.start_date
-        }])
-        .select()
-        .single();
-      
-      if (planError) throw planError;
-      
-      // Generate installment schedule
-      const installmentsToCreate = [];
-      const startDate = new Date(planData.start_date);
-      
-      for (let i = 1; i <= parseInt(planData.duration_months); i++) {
-        const dueDate = addMonths(startDate, i);
-        installmentsToCreate.push({
-          plan_id: plan.id,
-          installment_number: i,
-          due_date: dueDate.toISOString(),
-          amount: parseFloat(planData.monthly_installment),
-          status: 'unpaid'
-        });
+  // Handle errors for fetching plans and payments
+  useEffect(() => {
+    if (plansError) {
+      toast({
+        title: "Error fetching installment plans",
+        description: plansError.message,
+        variant: "destructive",
+      });
+    }
+  }, [plansError, toast]);
+
+  useEffect(() => {
+    if (allPaymentsError) {
+      toast({
+        title: "Error fetching all payments",
+        description: allPaymentsError.message,
+        variant: "destructive",
+      });
+    }
+  }, [allPaymentsError, toast]);
+
+  // Function to calculate plan status
+  const getPlanStatus = useCallback((plan: InstallmentPlan, allPayments: InstallmentPayment[]) => {
+    const paymentsForPlan = allPayments.filter(p => p.installment_plan_id === plan.id);
+
+    // Sum of all initial advance payments (Total Agreed Advance)
+    const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+
+    // Collected Advance: initial advance payment + subsequent advance adjustments
+    const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
+    const totalAdvanceAdjustmentsCollected = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+    const collectedAdvance = initialFirstAdvance + totalAdvanceAdjustmentsCollected;
+
+    const totalMonthlyPaymentsReceived = paymentsForPlan.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
+    const overallTotalPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected;
+
+
+    if (overallTotalPaid >= plan.total_price) {
+      return 'Completed';
+    }
+
+    const remainingAgreedAdvanceDue = totalAgreedAdvance - collectedAdvance;
+    if (remainingAgreedAdvanceDue > 0) {
+      return 'Advance Pending';
+    }
+
+    const saleDate = parseISO(plan.created_at);
+    const today = new Date();
+    let installmentsDueCount = 0;
+    for (let i = 1; i <= plan.duration_months; i++) {
+      const dueDate = addMonths(saleDate, i);
+      if (isBefore(dueDate, today) || format(dueDate, 'yyyy-MM-dd') === format(today, 'yyyy-MM-dd')) {
+        installmentsDueCount++;
+      } else {
+        break;
       }
-      
-      // Create installments
-      const { error: installmentsError } = await supabase
-        .from('installments')
-        .insert(installmentsToCreate);
-      
-      if (installmentsError) throw installmentsError;
-      
-      // Update rikshaw status
-      const { error: rikshawError } = await supabase
-        .from('rikshaws')
-        .update({ status: 'sold' })
-        .eq('id', planData.rikshaw_id);
-      
-      if (rikshawError) throw rikshawError;
-      
-      return plan;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['installment-plans']);
-      queryClient.invalidateQueries(['available-rikshaws']);
-      setIsAddDialogOpen(false);
-      resetForm();
-      toast({
-        title: "Success",
-        description: "Installment plan created successfully!"
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive"
-      });
     }
-  });
 
-  // Mark installment as paid
-  const markPaidMutation = useMutation({
-    mutationFn: async ({ installmentId, paymentMethod }: { installmentId: string; paymentMethod: 'cash' | 'bank' }) => {
-      const { data, error } = await supabase
-        .from('installments')
-        .update({
-          status: 'paid',
-          paid_date: new Date().toISOString(),
-          payment_method: paymentMethod,
-          collector: 'Admin' // In real app, get current user name
-        })
-        .eq('id', installmentId)
-        .select()
-        .single();
-      
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['installments', selectedPlan?.id]);
-      toast({
-        title: "Success",
-        description: "Installment marked as paid!"
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive"
-      });
+    const expectedMonthlyPaid = installmentsDueCount * plan.monthly_installment;
+
+    if (totalMonthlyPaymentsReceived >= expectedMonthlyPaid) {
+      return 'Active';
+    } else if (totalMonthlyPaymentsReceived < expectedMonthlyPaid && installmentsDueCount > 0) {
+      return 'Overdue';
     }
-  });
 
-  const resetForm = () => {
-    setFormData({
-      customer_id: '',
-      rikshaw_id: '',
-      total_price: '',
-      advance_paid: '',
-      monthly_installment: '',
-      duration_months: '12',
-      start_date: format(new Date(), 'yyyy-MM-dd')
+    return 'Not Active';
+  }, []);
+
+  // Filter and sort installment plans
+  const filteredAndSortedPlans = useMemo(() => {
+    if (loadingAllPayments) return [];
+
+    let filtered = installmentPlans.filter((plan: InstallmentPlan) => {
+      const customerName = plan.customers?.name?.toLowerCase() || '';
+      const customerCnic = plan.customers?.cnic?.toLowerCase() || '';
+      const rikshawRegNo = plan.rikshaws?.registration_number?.toLowerCase() || '';
+      const term = searchTerm.toLowerCase();
+      return customerName.includes(term) || customerCnic.includes(term) || rikshawRegNo.includes(term);
     });
+
+    filtered.sort((a: InstallmentPlan, b: InstallmentPlan) => {
+      let valA: any, valB: any;
+      if (sortBy === 'customer_name') {
+        valA = a.customers?.name?.toLowerCase();
+        valB = b.customers?.name?.toLowerCase();
+      } else if (sortBy === 'rikshaw_reg_no') {
+        valA = a.rikshaws?.registration_number?.toLowerCase();
+        valB = b.rikshaws?.registration_number?.toLowerCase();
+      } else {
+        valA = (a as any)[sortBy];
+        valB = (b as any)[sortBy];
+      }
+
+      if (typeof valA === 'string' && typeof valB === 'string') {
+        return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      }
+      return sortOrder === 'asc' ? valA - valB : valB - valA;
+    });
+
+    return filtered;
+  }, [installmentPlans, searchTerm, sortBy, sortOrder, loadingAllPayments]);
+
+  // Open detail modal
+  const handleViewDetails = (planId: string) => {
+    setSelectedPlanId(planId);
+    setShowDetailModal(true);
   };
 
-  const handleCreatePlan = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    // Basic validation
-    if (!formData.customer_id || !formData.rikshaw_id || 
-        !formData.total_price || !formData.advance_paid || 
-        !formData.monthly_installment) {
-      toast({
-        title: "Error",
-        description: "Please fill in all required fields",
-        variant: "destructive"
-      });
-      return;
-    }
-    
-    createPlanMutation.mutate(formData);
-  };
+  const calculateRemainingBalance = useCallback((plan: InstallmentPlan, payments: InstallmentPayment[]) => {
+    const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
+    const totalMonthlyPaymentsReceived = payments.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
+    const totalAdvanceAdjustmentsCollected = payments.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
 
-  const handleRikshawChange = (rikshawId: string) => {
-    const selectedRikshaw = rikshaws.find(r => r.id === rikshawId);
-    if (selectedRikshaw) {
-      setFormData({
-        ...formData,
-        rikshaw_id: rikshawId,
-        total_price: selectedRikshaw.price.toString()
-      });
-    }
-  };
-
-  const handleViewDetails = (plan: InstallmentPlan) => {
-    setSelectedPlan(plan);
-    setIsDetailDialogOpen(true);
-  };
-
-  const handleMarkPaid = (installmentId: string, method: 'cash' | 'bank') => {
-    markPaidMutation.mutate({ installmentId, paymentMethod: method });
-  };
-
-  const filteredPlans = installmentPlans.filter(plan => {
-    const customerName = plan.customers?.name?.toLowerCase() || '';
-    const rikshawModel = plan.rikshaws?.model?.toLowerCase() || '';
-    return (
-      customerName.includes(searchTerm.toLowerCase()) ||
-      rikshawModel.includes(searchTerm.toLowerCase())
-    );
-  });
-
-  // Calculate remaining balance
-  const calculateRemainingBalance = (plan: InstallmentPlan) => {
-    const totalAmount = plan.total_price - plan.advance_paid;
-    return totalAmount.toLocaleString();
-  };
+    const overallTotalPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected;
+    return plan.total_price - overallTotalPaid;
+  }, []);
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">Installment Plans</h1>
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={resetForm}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create Plan
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>Create New Installment Plan</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleCreatePlan} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Customer Selection */}
-                <div className="space-y-4">
-                  <div>
-                    <Label>Customer *</Label>
-                    <Select 
-                      value={formData.customer_id} 
-                      onValueChange={(value) => setFormData({...formData, customer_id: value})}
-                      required
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a customer" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {customers.map(customer => (
-                          <SelectItem key={customer.id} value={customer.id}>
-                            {customer.name} ({customer.cnic})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  {/* Rikshaw Selection */}
-                  <div>
-                    <Label>Rikshaw *</Label>
-                    <Select 
-                      value={formData.rikshaw_id} 
-                      onValueChange={handleRikshawChange}
-                      required
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a rikshaw" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {rikshaws.map(rikshaw => (
-                          <SelectItem key={rikshaw.id} value={rikshaw.id}>
-                            {rikshaw.model} (ENG: {rikshaw.engine_number})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  {/* Start Date */}
-                  <div>
-                    <Label>Start Date *</Label>
-                    <Input
-                      type="date"
-                      value={formData.start_date}
-                      onChange={(e) => setFormData({...formData, start_date: e.target.value})}
-                      required
-                    />
-                  </div>
-                </div>
-                
-                {/* Payment Details */}
-                <div className="space-y-4">
-                  <div>
-                    <Label>Total Price (Rs) *</Label>
-                    <Input
-                      type="number"
-                      value={formData.total_price}
-                      onChange={(e) => setFormData({...formData, total_price: e.target.value})}
-                      required
-                      disabled
-                    />
-                  </div>
-                  
-                  <div>
-                    <Label>Advance Paid (Rs) *</Label>
-                    <Input
-                      type="number"
-                      value={formData.advance_paid}
-                      onChange={(e) => setFormData({...formData, advance_paid: e.target.value})}
-                      required
-                    />
-                  </div>
-                  
-                  <div>
-                    <Label>Monthly Installment (Rs) *</Label>
-                    <Input
-                      type="number"
-                      value={formData.monthly_installment}
-                      onChange={(e) => setFormData({...formData, monthly_installment: e.target.value})}
-                      required
-                    />
-                  </div>
-                  
-                  <div>
-                    <Label>Duration (Months) *</Label>
-                    <Select 
-                      value={formData.duration_months} 
-                      onValueChange={(value) => setFormData({...formData, duration_months: value})}
-                      required
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select duration" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="6">6 Months</SelectItem>
-                        <SelectItem value="12">12 Months</SelectItem>
-                        <SelectItem value="18">18 Months</SelectItem>
-                        <SelectItem value="24">24 Months</SelectItem>
-                        <SelectItem value="36">36 Months</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="flex justify-end gap-3">
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  onClick={() => setIsAddDialogOpen(false)}
-                >
-                  Cancel
-                </Button>
-                <Button 
-                  type="submit" 
-                  disabled={createPlanMutation.isLoading}
-                >
-                  {createPlanMutation.isLoading ? "Creating..." : "Create Plan"}
-                </Button>
-              </div>
-            </form>
-          </DialogContent>
-        </Dialog>
+    <div className="space-y-6 max-w-7xl mx-auto p-4">
+      <div className="text-center">
+        <h1 className="text-3xl font-bold text-gray-800">Rickshaw Installment Plans</h1>
+        <p className="text-muted-foreground mt-2">
+          Manage and track all customer installment plans.
+        </p>
       </div>
 
       <Card>
         <CardHeader>
-          <div className="flex items-center space-x-2">
-            <Search className="h-4 w-4" />
-            <Input
-              placeholder="Search plans by customer or rikshaw..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="max-w-sm"
-            />
-          </div>
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Installment Plans Overview
+          </CardTitle>
+          <CardDescription>
+            Browse, search, and manage all active and completed installment plans.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
-            <div className="text-center py-8">Loading installment plans...</div>
-          ) : filteredPlans.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <DollarSign className="h-12 w-12 mx-auto mb-4" />
-              <p className="text-lg font-medium">No installment plans found</p>
-              <p className="mt-2">
-                {searchTerm 
-                  ? "Try adjusting your search" 
-                  : "Create your first installment plan to get started"
-                }
-              </p>
+          <div className="flex flex-col md:flex-row gap-4 mb-6">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by customer name, CNIC, or rickshaw registration..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 pr-4 py-2 rounded-md border"
+              />
             </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="sort-by" className="sr-only">Sort By</Label>
+              <Select value={sortBy} onValueChange={setSortBy}>
+                <SelectTrigger id="sort-by" className="w-[180px]">
+                  <SelectValue placeholder="Sort By" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="created_at">Date Created</SelectItem>
+                  <SelectItem value="customer_name">Customer Name</SelectItem>
+                  <SelectItem value="rikshaw_reg_no">Rickshaw Reg No</SelectItem>
+                  <SelectItem value="total_price">Total Price</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+              >
+                {sortOrder === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </Button>
+            </div>
+          </div>
+
+          {loadingPlans || loadingAllPayments ? (
+            <div className="text-center py-8 text-muted-foreground">Loading installment plans...</div>
+          ) : filteredAndSortedPlans.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">No installment plans found.</div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Rikshaw</TableHead>
-                  <TableHead>Start Date</TableHead>
-                  <TableHead>Total Amount</TableHead>
-                  <TableHead>Advance Paid</TableHead>
-                  <TableHead>Installment</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredPlans.map(plan => (
-                  <TableRow key={plan.id}>
-                    <TableCell>
-                      <div className="font-medium">{plan.customers?.name}</div>
-                      <div className="text-sm text-muted-foreground">{plan.customers?.phone}</div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="font-medium">{plan.rikshaws?.model}</div>
-                      <div className="text-sm text-muted-foreground">ENG: {plan.rikshaws?.engine_number}</div>
-                    </TableCell>
-                    <TableCell>{format(new Date(plan.start_date), 'dd MMM yyyy')}</TableCell>
-                    <TableCell>Rs {plan.total_price.toLocaleString()}</TableCell>
-                    <TableCell>Rs {plan.advance_paid.toLocaleString()}</TableCell>
-                    <TableCell>Rs {plan.monthly_installment.toLocaleString()}/mo</TableCell>
-                    <TableCell>{plan.duration_months} months</TableCell>
-                    <TableCell className="text-right">
-                      <Button 
-                        variant="outline"
-                        onClick={() => handleViewDetails(plan)}
-                      >
-                        View Details
-                      </Button>
-                    </TableCell>
+            <div className="overflow-x-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Customer Name</TableHead>
+                    <TableHead>Rickshaw Details</TableHead>
+                    <TableHead>Total Price</TableHead>
+                    
+                    <TableHead>Monthly Installment</TableHead>
+                    <TableHead>Remaining Balance</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {filteredAndSortedPlans.map((plan) => (
+                    <TableRow key={plan.id}>
+                      <TableCell className="font-medium">{plan.customers?.name}</TableCell>
+                      <TableCell>
+                        {plan.rikshaws?.model_name} ({plan.rikshaws?.registration_number})
+                      </TableCell>
+                      <TableCell>Rs {plan.total_price?.toLocaleString()}</TableCell>
+                      
+                      <TableCell>Rs {plan.monthly_installment?.toLocaleString()}</TableCell>
+                      <TableCell>
+                        Rs {calculateRemainingBalance(plan, allInstallmentPayments.filter(p => p.installment_plan_id === plan.id))?.toLocaleString()}
+                      </TableCell>
+                      <TableCell>
+                        <span className={cn(
+                          "px-2 py-1 rounded-full text-xs font-medium",
+                          getPlanStatus(plan, allInstallmentPayments) === 'Completed' && "bg-green-100 text-green-800",
+                          getPlanStatus(plan, allInstallmentPayments) === 'Active' && "bg-blue-100 text-blue-800",
+                          getPlanStatus(plan, allInstallmentPayments) === 'Overdue' && "bg-red-100 text-red-800",
+                          getPlanStatus(plan, allInstallmentPayments) === 'Advance Pending' && "bg-yellow-100 text-yellow-800",
+                          getPlanStatus(plan, allInstallmentPayments) === 'Not Active' && "bg-gray-100 text-gray-800",
+                        )}>
+                          {getPlanStatus(plan, allInstallmentPayments)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewDetails(plan.id)}
+                          className="flex items-center gap-1"
+                        >
+                          <Eye className="h-4 w-4" /> View Details
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Installment Plan Detail Dialog */}
-      <Dialog open={isDetailDialogOpen} onOpenChange={setIsDetailDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              Installment Plan Details
-            </DialogTitle>
-          </DialogHeader>
-          
-          {selectedPlan && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Card>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-3">
-                      <User className="h-6 w-6" />
-                      <h3 className="font-semibold">Customer Information</h3>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-2">
-                      <p className="font-medium">{selectedPlan.customers?.name}</p>
-                      <p>CNIC: {selectedPlan.customers?.cnic}</p>
-                      <p>Phone: {selectedPlan.customers?.phone}</p>
-                      <p>Address: {selectedPlan.customers?.address}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-                
-                <Card>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-3">
-                      <Car className="h-6 w-6" />
-                      <h3 className="font-semibold">Rikshaw Information</h3>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-2">
-                      <p className="font-medium">{selectedPlan.rikshaws?.model}</p>
-                      <p>Engine: {selectedPlan.rikshaws?.engine_number}</p>
-                      <p>Total Price: Rs {selectedPlan.total_price.toLocaleString()}</p>
-                      <p>Advance Paid: Rs {selectedPlan.advance_paid.toLocaleString()}</p>
-                      <p>Remaining Balance: Rs {calculateRemainingBalance(selectedPlan)}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-              
-              <Card>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center gap-3">
-                    <Calendar className="h-6 w-6" />
-                    <h3 className="font-semibold">Payment Schedule</h3>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>#</TableHead>
-                        <TableHead>Due Date</TableHead>
-                        <TableHead>Amount</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Payment Date</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {installments.map(installment => (
-                        <TableRow key={installment.id}>
-                          <TableCell>{installment.installment_number}</TableCell>
-                          <TableCell>{format(new Date(installment.due_date), 'dd MMM yyyy')}</TableCell>
-                          <TableCell>Rs {installment.amount.toLocaleString()}</TableCell>
-                          <TableCell>
-                            <Badge 
-                              variant={installment.status === 'paid' ? 'default' : 'destructive'}
-                              className="capitalize"
-                            >
-                              {installment.status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            {installment.paid_date 
-                              ? format(new Date(installment.paid_date), 'dd MMM yyyy') 
-                              : '-'}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {installment.status === 'unpaid' && (
-                              <div className="flex gap-2 justify-end">
-                                <Button 
-                                  variant="outline" 
-                                  size="sm"
-                                  onClick={() => handleMarkPaid(installment.id, 'cash')}
-                                  disabled={markPaidMutation.isLoading}
-                                >
-                                  <Check className="h-4 w-4 mr-1" />
-                                  Cash
-                                </Button>
-                                <Button 
-                                  variant="outline" 
-                                  size="sm"
-                                  onClick={() => handleMarkPaid(installment.id, 'bank')}
-                                  disabled={markPaidMutation.isLoading}
-                                >
-                                  <Check className="h-4 w-4 mr-1" />
-                                  Bank
-                                </Button>
-                              </div>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* Installment Detail Modal */}
+      {selectedPlanId && (
+        <InstallmentDetailModal
+          planId={selectedPlanId}
+          isOpen={showDetailModal}
+          onClose={() => {
+            setShowDetailModal(false);
+            setSelectedPlanId(null);
+          }}
+        />
+      )}
     </div>
   );
 };
 
-export default InstallmentsPage;
+// Installment Detail Modal Component
+interface InstallmentDetailModalProps {
+  planId: string;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId, isOpen, onClose }) => {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const [showRecordPaymentForm, setShowRecordPaymentForm] = useState(false);
+  const [paymentType, setPaymentType] = useState<'monthly' | 'advance_adjustment'>('monthly');
+  const [amountPaid, setAmountPaid] = useState<number>(0);
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
+  const [receivedBy, setReceivedBy] = useState('');
+  const [installmentNumber, setInstallmentNumber] = useState<number | null>(null);
+  const [isRecordingPayment, setIsRecordingPayment] = useState(false);
+
+  // Fetch specific installment plan details
+  const { data: planDetails, isLoading: loadingPlanDetails, error: planDetailsError } = useQuery<InstallmentPlan>({
+    queryKey: ['installment-plan-details', planId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('installment_plans')
+        .select(`
+          *,
+          customers!inner (name, cnic, phone, address, guarantor_name, guarantor_cnic, guarantor_phone, guarantor_address, bank_name, cheque_number),
+          rikshaws!inner (manufacturer, model_name, registration_number, engine_number, chassis_number, type)
+        `)
+        .eq('id', planId)
+        .single();
+      if (error) throw error;
+      return data as InstallmentPlan;
+    },
+    enabled: isOpen && !!planId,
+  });
+
+  // Fetch payments for the selected plan
+  const { data: installmentPayments = [], isLoading: loadingPayments, error: paymentsError } = useQuery<InstallmentPayment[]>({
+    queryKey: ['installment-payments', planId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('installment_payments')
+        .select('*')
+        .eq('installment_plan_id', planId)
+        .order('payment_date', { ascending: true });
+      if (error) throw error;
+      return data as InstallmentPayment[];
+    },
+    enabled: isOpen && !!planId,
+  });
+
+  // Handle errors
+  useEffect(() => {
+    if (planDetailsError) {
+      toast({
+        title: "Error fetching plan details",
+        description: planDetailsError.message,
+        variant: "destructive",
+      });
+    }
+  }, [planDetailsError, toast]);
+
+  useEffect(() => {
+    if (paymentsError) {
+      toast({
+        title: "Error fetching payments",
+        description: paymentsError.message,
+        variant: "destructive",
+      });
+    }
+  }, [paymentsError, toast]);
+
+  // Calculate total agreed advance payments (sum of all initial advance payments)
+  const totalAgreedAdvance = useMemo(() => {
+    if (!planDetails || !planDetails.advance_payments) return 0;
+    return planDetails.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+  }, [planDetails]);
+
+  // Calculate collected advance: initial first advance payment + subsequent advance adjustments
+  const collectedAdvance = useMemo(() => {
+    if (!planDetails) return 0;
+    const initialFirstAdvance = planDetails.advance_payments[0]?.amount || 0;
+    const totalAdvanceAdjustmentsCollected = installmentPayments.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+    return initialFirstAdvance + totalAdvanceAdjustmentsCollected;
+  }, [planDetails, installmentPayments]);
+
+  const remainingAgreedAdvanceDue = useMemo(() => {
+    return totalAgreedAdvance - collectedAdvance;
+  }, [totalAgreedAdvance, collectedAdvance]);
+
+
+  const totalMonthlyPaymentsReceived = useMemo(() => {
+    return installmentPayments.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
+  }, [installmentPayments]);
+
+  const overallTotalPaid = useMemo(() => {
+    // This now reflects total payments (initial first advance + monthly + advance adjustments)
+    return collectedAdvance + totalMonthlyPaymentsReceived;
+  }, [collectedAdvance, totalMonthlyPaymentsReceived]);
+
+  const remainingBalanceOnPlan = useMemo(() => {
+    if (!planDetails) return 0;
+    return planDetails.total_price - overallTotalPaid;
+  }, [planDetails, overallTotalPaid]);
+
+  // Generate monthly installment schedule with payment status
+  const monthlySchedule = useMemo(() => {
+    if (!planDetails) return [];
+    const schedule = [];
+    const saleDate = parseISO(planDetails.created_at);
+
+    // Create a map of payments by installment number
+    const paymentsByInstallment: Record<number, number> = {};
+    installmentPayments
+      .filter(p => p.payment_type === 'monthly' && p.installment_number !== null)
+      .forEach(p => {
+        if (p.installment_number) {
+          paymentsByInstallment[p.installment_number] = (paymentsByInstallment[p.installment_number] || 0) + p.amount_paid;
+        }
+      });
+
+    for (let i = 1; i <= planDetails.duration_months; i++) {
+      const dueDate = addMonths(saleDate, i);
+      const paidAmount = paymentsByInstallment[i] || 0;
+      const isPaid = paidAmount >= planDetails.monthly_installment;
+      const isPartiallyPaid = paidAmount > 0 && paidAmount < planDetails.monthly_installment;
+
+      schedule.push({
+        installment_number: i,
+        due_date: format(dueDate, 'yyyy-MM-dd'),
+        expected_amount: planDetails.monthly_installment,
+        paid_amount: paidAmount,
+        status: isPaid ? 'Paid' : isPartiallyPaid ? 'Partially Paid' : 'Unpaid'
+      });
+    }
+    return schedule;
+  }, [planDetails, installmentPayments]);
+
+  // Available installments for payment selection
+  const availableInstallments = useMemo(() => {
+    if (!planDetails) return [];
+    return monthlySchedule.filter(
+      item => item.status !== 'Paid' && item.expected_amount > item.paid_amount
+    ).map(item => item.installment_number);
+  }, [monthlySchedule, planDetails]);
+
+  // Mutation to record a new payment
+  const recordPaymentMutation = useMutation({
+    mutationFn: async (newPayment: {
+      installment_plan_id: string;
+      payment_date: string;
+      amount_paid: number;
+      received_by: string;
+      payment_type: 'monthly' | 'advance_adjustment';
+      installment_number?: number | null;
+    }) => {
+      setIsRecordingPayment(true);
+      const { data, error } = await supabase
+        .from('installment_payments')
+        .insert([newPayment])
+        .select()
+        .single();
+      if (error) throw error;
+
+      // Update total_paid_monthly_installments if it's a monthly payment
+      if (newPayment.payment_type === 'monthly') {
+        const { data: currentPlan, error: fetchPlanError } = await supabase
+          .from('installment_plans')
+          .select('total_paid_monthly_installments')
+          .eq('id', planId)
+          .single();
+
+        if (!fetchPlanError) {
+          const updatedTotalPaidMonthly = (currentPlan?.total_paid_monthly_installments || 0) + newPayment.amount_paid;
+          await supabase
+            .from('installment_plans')
+            .update({ total_paid_monthly_installments: updatedTotalPaidMonthly })
+            .eq('id', planId);
+        }
+      }
+
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['installment-payments', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] });
+
+      toast({
+        title: "Payment Recorded!",
+        description: `Rs ${amountPaid.toLocaleString()} received for ${paymentType === 'monthly' ? 'monthly installment' : 'advance adjustment'}.`,
+      });
+      generatePaymentReceipt(data);
+      setShowRecordPaymentForm(false);
+      setAmountPaid(0);
+      setReceivedBy('');
+      setPaymentDate(new Date().toISOString().split('T')[0]);
+      setInstallmentNumber(null);
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error recording payment",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+    onSettled: () => setIsRecordingPayment(false)
+  });
+
+  // Handle recording payment submission
+  const handleRecordPayment = () => {
+    if (!planDetails) {
+      toast({ title: "Error", description: "Plan details not loaded.", variant: "destructive" });
+      return;
+    }
+    if (amountPaid <= 0) {
+      toast({ title: "Error", description: "Amount paid must be greater than 0.", variant: "destructive" });
+      return;
+    }
+    if (!paymentDate) {
+      toast({ title: "Error", description: "Payment date is required.", variant: "destructive" });
+      return;
+    }
+    if (!receivedBy.trim()) {
+      toast({ title: "Error", description: "Received by name is required.", variant: "destructive" });
+      return;
+    }
+    if (paymentType === 'monthly' && installmentNumber === null) {
+      toast({ title: "Error", description: "Please select an installment number.", variant: "destructive" });
+      return;
+    }
+
+    recordPaymentMutation.mutate({
+      installment_plan_id: planId,
+      payment_date: paymentDate,
+      amount_paid: amountPaid,
+      received_by: receivedBy.trim(),
+      payment_type: paymentType,
+      installment_number: paymentType === 'monthly' ? installmentNumber : null
+    });
+  };
+
+  // Generate Payment Receipt
+  const generatePaymentReceipt = (paymentRecord: InstallmentPayment) => {
+    if (!planDetails) return;
+
+    // Calculate new remaining balance considering the current payment being recorded
+    const tempOverallTotalPaid = overallTotalPaid + paymentRecord.amount_paid;
+    const newRemainingBalance = Math.max(0, planDetails.total_price - tempOverallTotalPaid);
+
+    const receiptWindow = window.open('', '_blank');
+
+    if (receiptWindow) {
+      receiptWindow.document.write(`
+        <html>
+          <head>
+            <title>Payment Receipt</title>
+            <style>
+              body {
+                font-family: 'Segoe UI', Tahoma, sans-serif;
+                padding: 40px;
+                max-width: 800px;
+                margin: 0 auto;
+                color: #1f2937;
+                background-color: #ffffff;
+              }
+
+              .header {
+                text-align: center;
+                margin-bottom: 30px;
+                border-bottom: 3px solid #1e3a8a;
+                padding-bottom: 10px;
+              }
+
+              .header .title {
+                font-size: 28px;
+                font-weight: 800;
+                color: #1e3a8a;
+                text-transform: uppercase;
+              }
+
+              .header .subtitle {
+                font-size: 14px;
+                color: #6b7280;
+              }
+
+              .section-title {
+                font-size: 20px;
+                font-weight: bold;
+                color: #1e40af;
+                margin-bottom: 10px;
+                border-bottom: 2px solid #e5e7eb;
+                padding-bottom: 5px;
+              }
+
+              .details {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                font-size: 14px;
+                margin-bottom: 20px;
+              }
+
+              .detail-item {
+                margin-bottom: 6px;
+              }
+
+              .detail-label {
+                font-weight: 600;
+                color: #374151;
+              }
+
+              .total-box {
+                background-color: #f0f9ff;
+                border-left: 4px solid #3b82f6;
+                padding: 15px;
+                font-weight: 600;
+                font-size: 16px;
+                text-align: center;
+                border-radius: 6px;
+                margin-top: 30px;
+                color: #0c4a6e;
+              }
+
+              .footer {
+                margin-top: 40px;
+                text-align: center;
+                font-size: 12px;
+                color: #6b7280;
+                border-top: 1px solid #e5e7eb;
+                padding-top: 10px;
+              }
+
+              .print-button-container {
+                margin-top: 30px;
+                text-align: center;
+              }
+
+              .print-button {
+                background-color: #1e3a8a;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                cursor: pointer;
+              }
+
+              @media print {
+                .print-button-container { display: none; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <div class="title">AL-HAMD TRADERS</div>
+              <div class="subtitle">Railway Road Chowk Shamah, Sargodha</div>
+            </div>
+
+            <div class="section">
+              <div class="section-title">Payment Receipt</div>
+              <div class="details">
+                <div class="detail-item"><span class="detail-label">Receipt #:</span> ${paymentRecord.id.substring(0, 8)}</div>
+                <div class="detail-item"><span class="detail-label">Payment Date:</span> ${new Date(paymentRecord.payment_date).toLocaleDateString()}</div>
+                <div class="detail-item"><span class="detail-label">Customer:</span> ${planDetails.customers.name}</div>
+                <div class="detail-item"><span class="detail-label">CNIC:</span> ${planDetails.customers.cnic}</div>
+                <div class="detail-item"><span class="detail-label">Rickshaw:</span> ${planDetails.rikshaws.model_name} (${planDetails.rikshaws.registration_number})</div>
+                <div class="detail-item"><span class="detail-label">Payment Type:</span> ${paymentRecord.payment_type === 'monthly' ? 'Monthly Installment' : 'Advance Payment Adjustment'}</div>
+                ${
+                  paymentRecord.payment_type === 'monthly' && paymentRecord.installment_number
+                    ? `<div class="detail-item"><span class="detail-label">Installment #:</span> ${paymentRecord.installment_number}</div>`
+                    : ''
+                }
+                <div class="detail-item"><span class="detail-label">Amount Paid:</span> Rs ${paymentRecord.amount_paid.toLocaleString()}</div>
+                <div class="detail-item"><span class="detail-label">Received By:</span> ${paymentRecord.received_by}</div>
+              </div>
+            </div>
+
+            <div class="total-box">
+              Remaining Balance: Rs ${newRemainingBalance.toLocaleString()}
+            </div>
+
+            <div class="footer">
+              Thank you for your business! For any queries, contact: 0300-1234567
+            </div>
+
+            <div class="print-button-container">
+              <button class="print-button" onclick="window.print()">🖨️ Print Receipt</button>
+            </div>
+          </body>
+        </html>
+      `);
+
+      receiptWindow.document.close();
+    }
+  };
+
+
+  if (loadingPlanDetails || loadingPayments) {
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent className="max-w-4xl h-[600px] flex items-center justify-center">
+          <p>Loading plan details and payments...</p>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  if (!planDetails) {
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent className="max-w-4xl h-[600px] flex items-center justify-center">
+          <p>Error: Could not load installment plan details.</p>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  const handlePrintPlan = () => {
+    if (!planDetails) return;
+
+    const printContent = document.getElementById('printable-plan');
+    const printWindow = window.open('', '_blank');
+
+    if (printWindow && printContent) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Installment Plan - ${planDetails.customers?.name}</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <style>
+              @media print {
+                .no-print { display: none; }
+                body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+              }
+            </style>
+          </head>
+          <body class="text-gray-900 p-10">
+            <div class="text-center border-b-4 border-blue-900 pb-4 mb-6">
+              <h1 class="text-4xl font-extrabold text-blue-900 uppercase">Al-Hamd Traders</h1>
+              <p class="text-sm text-gray-600">Railway Road Chowk Shamah, Sargodha</p>
+            </div>
+
+            <div id="printable-wrapper">
+              ${printContent.innerHTML}
+            </div>
+
+            <div class="text-center text-xs text-gray-500 border-t mt-10 pt-4">
+              Thank you for your business! For any queries, contact: 0300-1234567
+            </div>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.focus();
+      printWindow.print();
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-5xl overflow-y-auto max-h-[90vh] p-6">
+        <DialogHeader>
+          <DialogTitle className="text-2xl font-bold text-gray-800">
+            Installment Plan Details for {planDetails.customers?.name}
+          </DialogTitle>
+          <DialogDescription>
+            Comprehensive view of the installment plan for {planDetails.rikshaws?.model_name} ({planDetails.rikshaws?.registration_number}).
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-6 mt-4">
+          {/* Customer & Rickshaw Details */}
+          <div id="printable-plan">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <Card className="border">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Customer Information</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm space-y-1">
+                  <p><strong>Name:</strong> {planDetails.customers?.name}</p>
+                  <p><strong>CNIC:</strong> {planDetails.customers?.cnic}</p>
+                  <p><strong>Phone:</strong> {planDetails.customers?.phone}</p>
+                  <p><strong>Address:</strong> {planDetails.customers?.address}</p>
+                </CardContent>
+              </Card>
+              <Card className="border">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Rickshaw Information</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm space-y-1">
+                  <p><strong>Manufacturer:</strong> {planDetails.rikshaws?.manufacturer}</p>
+                  <p><strong>Model:</strong> {planDetails.rikshaws?.model_name}</p>
+                  <p><strong>Engine No:</strong> {planDetails.rikshaws?.engine_number}</p>
+                  <p><strong>Chassis No:</strong> {planDetails.rikshaws?.chassis_number}</p>
+                  <p><strong>Reg No:</strong> {planDetails.rikshaws?.registration_number}</p>
+                  <p><strong>Type:</strong> {planDetails.rikshaws?.type}</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Guarantor & Bank Details */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <Card className="border">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Guarantor Details</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm space-y-1">
+                  <p><strong>Name:</strong> {planDetails.customers?.guarantor_name}</p>
+                  <p><strong>CNIC:</strong> {planDetails.customers?.guarantor_cnic}</p>
+                  <p><strong>Phone:</strong> {planDetails.customers?.guarantor_phone}</p>
+                  <p><strong>Address:</strong> {planDetails.customers?.guarantor_address}</p>
+                </CardContent>
+              </Card>
+              <Card className="border">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Bank Details</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm space-y-1">
+                  <p><strong>Bank Name:</strong> {planDetails.customers?.bank_name}</p>
+                  <p><strong>Cheque Number:</strong> {planDetails.customers?.cheque_number}</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Overall Payment Summary */}
+            <Card className="border bg-blue-50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg text-blue-700">Payment Summary</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Total Price:</p>
+                  <p className="font-bold text-lg">Rs {planDetails.total_price?.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Agreed Advance Amount:</p>
+                  <p className="font-bold text-lg">Rs {totalAgreedAdvance.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Collected Advance:</p>
+                  <p className="font-bold text-lg">Rs {collectedAdvance.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Monthly Installment:</p>
+                  <p className="font-bold text-lg">Rs {planDetails.monthly_installment?.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Duration:</p>
+                  <p className="font-bold text-lg">{planDetails.duration_months} months</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Remaining Advance Balance:</p>
+                  <p className="font-bold text-lg text-orange-700">Rs {remainingAgreedAdvanceDue.toLocaleString()}</p>
+                </div>
+                <div className="md:col-span-3">
+                  <p className="text-muted-foreground">Overall Remaining Balance:</p>
+                  <p className="font-bold text-2xl text-green-700">Rs {remainingBalanceOnPlan.toLocaleString()}</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Advance Payment History (initial chunks) */}
+            <Card className="border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg">Initial Advance Payment History</CardTitle>
+                <CardDescription>Records of the advance payments made at the time of plan creation.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {planDetails.advance_payments && planDetails.advance_payments.length > 0 ? (
+                  <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>#</TableHead>
+                          <TableHead>Amount (Rs)</TableHead>
+                          <TableHead>Date Paid</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {planDetails.advance_payments.map((payment: AdvancePayment, index: number) => (
+                          <TableRow key={index}>
+                            <TableCell>{index + 1}</TableCell>
+                            <TableCell>Rs {payment.amount.toLocaleString()}</TableCell>
+                            <TableCell>{new Date(payment.date).toLocaleDateString()}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground">No initial advance payments recorded.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Monthly Installment Schedule */}
+            <Card className="border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg">Monthly Installment Schedule</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {monthlySchedule.length > 0 ? (
+                  <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Installment #</TableHead>
+                          <TableHead>Due Date</TableHead>
+                          <TableHead>Expected Amount</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Amount Paid</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {monthlySchedule.map((item, index) => (
+                          <TableRow key={index}>
+                            <TableCell>{item.installment_number}</TableCell>
+                            <TableCell>{new Date(item.due_date).toLocaleDateString()}</TableCell>
+                            <TableCell>Rs {item.expected_amount.toLocaleString()}</TableCell>
+                            <TableCell>
+                              <span className={cn(
+                                "px-2 py-1 rounded-full text-xs font-medium",
+                                item.status === 'Paid' && "bg-green-100 text-green-800",
+                                item.status === 'Partially Paid' && "bg-yellow-100 text-yellow-800",
+                                item.status === 'Unpaid' && "bg-gray-100 text-gray-800"
+                              )}>
+                                {item.status}
+                              </span>
+                            </TableCell>
+                            <TableCell>Rs {item.paid_amount.toLocaleString()}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground">No monthly installment schedule available.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Actual Payment History */}
+            <Card className="border">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg">Actual Payment History</CardTitle>
+                <CardDescription>Includes all monthly and advance adjustment payments.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {installmentPayments.length > 0 ? (
+                  <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Date Paid</TableHead>
+                          <TableHead>Amount Paid (Rs)</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Installment #</TableHead>
+                          <TableHead>Received By</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {installmentPayments.map((payment: InstallmentPayment) => (
+                          <TableRow key={payment.id}>
+                            <TableCell>{new Date(payment.payment_date).toLocaleDateString()}</TableCell>
+                            <TableCell>Rs {payment.amount_paid.toLocaleString()}</TableCell>
+                            <TableCell>{payment.payment_type === 'monthly' ? 'Monthly' : 'Advance Adjustment'}</TableCell>
+                            <TableCell>
+                              {payment.payment_type === 'monthly' && payment.installment_number !== null
+                                ? payment.installment_number
+                                : '-'}
+                            </TableCell>
+                            <TableCell>{payment.received_by}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground">No actual payments recorded for this plan yet.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+          {/* Record Payment Section */}
+          <Card className="border bg-green-50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-lg text-green-700 flex items-center justify-between">
+                Record New Payment
+                <Button variant="outline" size="sm" onClick={() => setShowRecordPaymentForm(!showRecordPaymentForm)}>
+                  {showRecordPaymentForm ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+                  {showRecordPaymentForm ? "Hide Form" : "Show Form"}
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            {showRecordPaymentForm && (
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="payment-type">Payment Type *</Label>
+                    <Select value={paymentType} onValueChange={(value: 'monthly' | 'advance_adjustment') => setPaymentType(value)}>
+                      <SelectTrigger id="payment-type">
+                        <SelectValue placeholder="Select payment type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="monthly">Monthly Installment</SelectItem>
+                        <SelectItem value="advance_adjustment">Advance Payment Adjustment</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {paymentType === 'monthly' && (
+                    <div className="space-y-2">
+                      <Label htmlFor="installment-number">Installment # *</Label>
+                      <Select
+                        value={installmentNumber?.toString() || ''}
+                        onValueChange={(value) => setInstallmentNumber(parseInt(value))}
+                      >
+                        <SelectTrigger id="installment-number">
+                          <SelectValue placeholder="Select installment number" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableInstallments.map(num => (
+                            <SelectItem key={num} value={num.toString()}>
+                              Installment #{num}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    <Label htmlFor="amount-paid">Amount Paid (Rs) *</Label>
+                    <Input
+                      id="amount-paid"
+                      type="number"
+                      value={amountPaid || ''}
+                      onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="payment-date">Payment Date *</Label>
+                    <Input
+                      id="payment-date"
+                      type="date"
+                      value={paymentDate}
+                      onChange={(e) => setPaymentDate(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="received-by">Received By *</Label>
+                    <Input
+                      id="received-by"
+                      type="text"
+                      placeholder="Enter name of receiver"
+                      value={receivedBy}
+                      onChange={(e) => setReceivedBy(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end pt-2">
+                  <Button
+                    onClick={handleRecordPayment}
+                    disabled={isRecordingPayment}
+                    className="px-6 bg-green-600 hover:bg-green-700"
+                  >
+                    {isRecordingPayment ? "Recording..." : "Record Payment"}
+                  </Button>
+                </div>
+              </CardContent>
+            )}
+          </Card>
+        </div>
+        <DialogFooter className="mt-6">
+          <Button onClick={handlePrintPlan} className="ml-2">
+            Print Plan
+          </Button>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+export default InstallmentPage;
