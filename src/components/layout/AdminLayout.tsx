@@ -29,28 +29,29 @@ const AdminLayout = () => {
   const location = useLocation();
 
   const menuItems = [
-     {
-      title: 'Sell a Rikshaw',
-      icon: ShoppingBag,
-      href: '/sell-rickshaw',
-    },
+   
     {
       title: 'Dashboard',
       icon: LayoutDashboard,
       href: '/dashboard',
     },
+      {
+      title: 'Sell a Rikshaw',
+      icon: ShoppingBag,
+      href: '/sell-rickshaw',
+    },
     {
-      title: 'Rikshaws',
+      title: 'Rikshaws Managment',
       icon: Car,
       href: '/rikshaws',
     },
     {
-      title: 'Customers',
+      title: 'Customers Mangement',
       icon: Users,
       href: '/customers',
     },
     {
-      title: 'Installments',
+      title: 'Installments Plans',
       icon: CreditCard,
       href: '/installments',
     },
@@ -58,11 +59,6 @@ const AdminLayout = () => {
       title: 'Reports',
       icon: BarChart3,
       href: '/reports',
-    },
-    {
-      title: 'Settings',
-      icon: Settings,
-      href: '/settings',
     },
   ];
 

@@ -5,10 +5,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'; // Keep Select for general use if needed, but not for customer/rikshaw selection
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X } from 'lucide-react';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Plus, X, Search } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
@@ -53,7 +53,7 @@ const SellRickshaw = () => {
     total_price: 0,
     total_advance_collected: 0, // Renamed from advance_agreed
     monthly_installment: 0,
-    duration_months: 12,
+    duration_months: 12, // Default duration
     agreement_date: new Date().toISOString().split('T')[0], // New field: Agreement Date
   });
   
@@ -69,6 +69,13 @@ const SellRickshaw = () => {
   // State to toggle between form and preview
   const [showPreview, setShowPreview] = useState(false);
 
+  // New state for search terms and selected item display names
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  const [rikshawSearchTerm, setRikshawSearchTerm] = useState('');
+  const [selectedCustomerName, setSelectedCustomerName] = useState('');
+  const [selectedRikshawDisplayName, setSelectedRikshawDisplayName] = useState('');
+
+
   // Effect to update total_advance_collected based on the first advance payment
   useEffect(() => {
     // total_advance_collected is only the first advance payment
@@ -76,28 +83,40 @@ const SellRickshaw = () => {
     setSaleData(prev => ({ ...prev, total_advance_collected: firstAdvanceAmount }));
   }, [advancePayments]);
 
-  // Fetch customers data using react-query
-  const { data: customers = [], isLoading: loadingCustomers } = useQuery({
-    queryKey: ['customers'],
+  // Fetch customers data using react-query with search filter
+  const { data: customers = [], isLoading: loadingCustomers } = useQuery<Customer[]>({
+    queryKey: ['customers', customerSearchTerm], // Include search term in query key
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('customers')
         .select('*')
         .order('created_at', { ascending: false });
+
+      if (customerSearchTerm) {
+        query = query.or(`name.ilike.%${customerSearchTerm}%,cnic.ilike.%${customerSearchTerm}%,phone.ilike.%${customerSearchTerm}%`);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       return data;
     }
   });
 
-  // Fetch available rikshaws data using react-query
-const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
-  queryKey: ['available-rikshaws'],
+  // Fetch available rikshaws data using react-query with search filter
+const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery<Rikshaw[]>({
+  queryKey: ['available-rikshaws', rikshawSearchTerm], // Include search term in query key
   queryFn: async () => {
-    const { data, error } = await supabase
+    let query = supabase
       .from('rikshaws')
       .select('*')
-      .eq('availability', 'unsold') // <-- fix here
+      .eq('availability', 'unsold')
       .order('created_at', { ascending: false });
+
+    if (rikshawSearchTerm) {
+      query = query.or(`manufacturer.ilike.%${rikshawSearchTerm}%,model_name.ilike.%${rikshawSearchTerm}%,engine_number.ilike.%${rikshawSearchTerm}%,chassis_number.ilike.%${rikshawSearchTerm}%`);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
     return data;
   }
@@ -159,9 +178,9 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
           duration_months: saleData.duration_months,
           agreement_date: saleData.agreement_date, // Store agreement date
           guarantor_name: selectedCustomer.guarantor_name,
-          guarantor_cnic: selectedCustomer.guarantor_cnic,
-          guarantor_phone: selectedCustomer.guarantor_phone,
-          guarantor_address: selectedCustomer.guarantor_address,
+          guarantor_cnic: selectedCustomer.cnic, // Use customer's CNIC for guarantor_cnic
+          guarantor_phone: selectedCustomer.phone, // Use customer's phone for guarantor_phone
+          guarantor_address: selectedCustomer.address, // Use customer's address for guarantor_address
           bank_name: selectedCustomer.bank_name,
           cheque_number: selectedCustomer.cheque_number,
           rikshaw_details: { // Store rickshaw details for historical record
@@ -178,10 +197,13 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
 
       if (planError) throw planError; // Handle insertion error
 
-      // Update the availability of the sold rickshaw to 'sold'
+      // Update the availability of the sold rickshaw to 'sold' AND set the sale_price
       const { error: rikshawError } = await supabase
         .from('rikshaws')
-        .update({ availability: 'sold' })
+        .update({
+          availability: 'sold',
+          sale_price: saleData.total_price // Set sale_price from total_price of the installment plan
+        })
         .eq('id', saleData.rikshaw_id); // Match by rickshaw ID
       if (rikshawError) throw rikshawError; // Handle update error
 
@@ -197,6 +219,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
       // Invalidate queries to refetch updated data
       queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
       queryClient.invalidateQueries({ queryKey: ['available-rikshaws'] });
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate general rikshaws query to update sale_price in table view
       setCreatedSaleDetails(saleDetails); // Store sale details
       toast({
         title: "Sale Completed!",
@@ -214,132 +237,6 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
     onSettled: () => setIsSubmitting(false) // Reset submitting state regardless of success or error
   });
 
-  // Handler to generate and download the sale receipt
-  const handleDownloadReceipt = () => {
-    if (!createdSaleDetails) return; // Ensure sale details exist
-
-    // Generate HTML for advance payments, marking the first one as "Collected"
-    const advancePaymentsHtml = createdSaleDetails.advancePayments
-      .map((payment: any, index: number) => `
-        <div class="detail-item">
-          <span class="detail-label">Advance ${index + 1} ${index === 0 ? '(Collected)' : ''}:</span> 
-          Rs ${payment.amount.toLocaleString()} on ${new Date(payment.date).toLocaleDateString()}
-        </div>
-      `)
-      .join('');
-    
-    // Open a new window for the receipt
-    const receiptWindow = window.open('', '_blank');
-    if (receiptWindow) {
-      receiptWindow.document.write(`
-        <html>
-      <head>
-        <title>Sale Receipt</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <style>
-          @media print {
-            @page {
-              size: A4 portrait;
-              margin: 12mm;
-            }
-            .no-print {
-              display: none;
-            }
-            body {
-              font-size: 13px;
-              line-height: 1.4;
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }
-          }
-        </style>
-      </head>
-      <body class="text-gray-900 font-sans p-6 bg-white max-w-[900px] mx-auto">
-        <div class="text-center border-b-4 border-blue-900 pb-2 mb-4">
-          <h1 class="text-3xl font-extrabold text-blue-900 uppercase">AL-HAMD TRADERS</h1>
-          <p class="text-sm text-gray-600">Railway Road Chowk Shamah, Sargodha</p>
-        </div>
-
-        <div class="border border-blue-800 rounded-md p-5">
-          <h2 class="text-xl font-bold text-blue-800 border-b pb-2 mb-4">Sale Receipt</h2>
-
-          <div class="grid grid-cols-3 gap-4 mb-4">
-            <div><strong>Date:</strong> ${new Date().toLocaleDateString()}</div>
-            <div><strong>Receipt #:</strong> ${createdSaleDetails.plan.id}</div>
-            <div><strong>Agreement Date:</strong> ${new Date(createdSaleDetails.plan.agreement_date).toLocaleDateString()}</div>
-          </div>
-
-          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Customer Details</h3>
-          <div class="grid grid-cols-3 gap-4 mb-4">
-            <div><strong>Name:</strong> ${createdSaleDetails.customer.name}</div>
-            <div><strong>CNIC:</strong> ${createdSaleDetails.customer.cnic}</div>
-            <div><strong>Phone:</strong> ${createdSaleDetails.customer.phone}</div>
-            <div class="col-span-3"><strong>Address:</strong> ${createdSaleDetails.customer.address}</div>
-          </div>
-
-          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Rickshaw Details</h3>
-          <div class="grid grid-cols-3 gap-4 mb-4">
-            <div><strong>Manufacturer:</strong> ${createdSaleDetails.rikshaw.manufacturer}</div>
-            <div><strong>Model:</strong> ${createdSaleDetails.rikshaw.model_name}</div>
-            <div><strong>Type:</strong> ${createdSaleDetails.rikshaw.type}</div>
-            <div><strong>Engine No:</strong> ${createdSaleDetails.rikshaw.engine_number}</div>
-            <div><strong>Chassis No:</strong> ${createdSaleDetails.rikshaw.chassis_number}</div>
-            <div><strong>Reg No:</strong> ${createdSaleDetails.rikshaw.registration_number}</div>
-          </div>
-
-          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Payment Details</h3>
-          <div class="grid grid-cols-3 gap-4 mb-4">
-            <div><strong>Total Price:</strong> Rs ${createdSaleDetails.plan.total_price.toLocaleString()}</div>
-            <div><strong>Advance Collected:</strong> Rs ${createdSaleDetails.plan.advance_paid.toLocaleString()}</div>
-            <div><strong>Monthly:</strong> Rs ${createdSaleDetails.plan.monthly_installment.toLocaleString()}</div>
-            <div><strong>Duration:</strong> ${createdSaleDetails.plan.duration_months} months</div>
-          </div>
-
-          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Advance Installments</h3>
-          <div class="grid grid-cols-3 gap-4 mb-4">
-            ${advancePaymentsHtml}
-          </div>
-
-          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Guarantor Details</h3>
-          <div class="grid grid-cols-3 gap-4 mb-4">
-            <div><strong>Name:</strong> ${createdSaleDetails.customer.guarantor_name}</div>
-            <div><strong>CNIC:</strong> ${createdSaleDetails.customer.guarantor_cnic}</div>
-            <div><strong>Phone:</strong> ${createdSaleDetails.customer.guarantor_phone}</div>
-            <div class="col-span-3"><strong>Address:</strong> ${createdSaleDetails.customer.guarantor_address}</div>
-          </div>
-
-          <h3 class="text-blue-800 font-semibold border-b pb-1 mb-2">Bank Details</h3>
-          <div class="grid grid-cols-2 gap-4 mb-4">
-            <div><strong>Bank Name:</strong> ${createdSaleDetails.customer.bank_name}</div>
-            <div><strong>Cheque #:</strong> ${createdSaleDetails.customer.cheque_number}</div>
-          </div>
-
-          <div class="text-center font-bold text-blue-900 bg-blue-50 border border-blue-500 rounded-md py-2 mt-3 text-lg">
-            Total Amount: Rs ${createdSaleDetails.plan.total_price.toLocaleString()}
-          </div>
-
-          <div class="flex justify-between mt-8 text-sm text-gray-700">
-            <div class="text-center border-t border-gray-800 pt-2 w-[45%]">Customer Signature</div>
-            <div class="text-center border-t border-gray-800 pt-2 w-[45%]">Manager Signature</div>
-          </div>
-
-          <p class="text-center text-xs text-gray-500 mt-4 border-t pt-2">
-            Thank you for your business! For any queries, contact: 0300-1234567
-          </p>
-        </div>
-
-        <div class="text-center mt-5 no-print">
-          <button onclick="window.print()" class="bg-blue-800 text-white px-5 py-2 rounded-md text-sm hover:bg-blue-900">
-            🖨️ Print Receipt
-          </button>
-        </div>
-      </body>
-    </html>
-      `);
-      receiptWindow.document.close(); // Close the document stream
-    }
-  };
-
   // Function to reset the form to its initial state
   const resetForm = () => {
     setSaleData({
@@ -355,6 +252,10 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
       { amount: 0, date: new Date().toISOString().split('T')[0] }
     ]);
     setShowPreview(false); // Hide the preview
+    setCustomerSearchTerm(''); // Clear search terms
+    setRikshawSearchTerm(''); // Clear search terms
+    setSelectedCustomerName(''); // Clear selected customer name
+    setSelectedRikshawDisplayName(''); // Clear selected rikshaw display name
   };
 
   // Handler for initiating the sale process
@@ -406,14 +307,8 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
       return;
     }
 
-    if (saleData.monthly_installment <= 0) {
-      toast({ 
-        title: "Error", 
-        description: "Monthly installment must be greater than 0", 
-        variant: "destructive" 
-      });
-      return;
-    }
+    // Monthly installment is now optional, so no validation for <= 0 here.
+    // The database schema should handle null or default 0 if not provided.
 
     // Validate subsequent advance payments (installments)
     for (let i = 1; i < advancePayments.length; i++) {
@@ -439,6 +334,21 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
 
   // Calculate remaining balance
   const remainingBalance = saleData.total_price - saleData.total_advance_collected;
+
+  // Handle customer selection from search suggestions
+  const handleSelectCustomer = (customer: Customer) => {
+    setSaleData(prev => ({ ...prev, customer_id: customer.id }));
+    setSelectedCustomerName(`${customer.name} (${customer.cnic})`);
+    setCustomerSearchTerm(''); // Clear search term to hide suggestions
+  };
+
+  // Handle rikshaw selection from search suggestions
+  const handleSelectRikshaw = (rikshaw: Rikshaw) => {
+    setSaleData(prev => ({ ...prev, rikshaw_id: rikshaw.id }));
+    setSelectedRikshawDisplayName(`${rikshaw.manufacturer} - ${rikshaw.model_name} (ENG: ${rikshaw.engine_number})`);
+    setRikshawSearchTerm(''); // Clear search term to hide suggestions
+  };
+
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -497,7 +407,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
             </div>
             
             <div className="border border-green-200 p-4 rounded-lg bg-green-50 mb-6 shadow-sm">
-              <h3 className="text-lg font-semibold mb-3 text-green-700">Advance Installments</h3>
+              <h3 className="text-lg font-semibold mb-3 text-green-700">Advance Due</h3>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -537,13 +447,6 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
                 className="px-8 py-2 border-gray-300 text-gray-700 hover:bg-gray-100 rounded-md shadow-sm"
               >
                 New Sale
-              </Button>
-              <Button 
-                onClick={handleDownloadReceipt}
-                className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-md flex items-center gap-2"
-              >
-                <Printer className="h-4 w-4" />
-                Download Receipt
               </Button>
             </div>
           </CardContent>
@@ -634,7 +537,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
             </div>
             
             <div className="border border-blue-200 p-4 rounded-lg bg-blue-50 mb-6 shadow-sm">
-              <h3 className="text-lg font-semibold mb-3 text-blue-700">Advance Installments</h3>
+              <h3 className="text-lg font-semibold mb-3 text-blue-700">Advance Due</h3>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -684,54 +587,95 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
           </CardHeader>
           <CardContent className="space-y-6 p-6">
             <div className="space-y-3">
-              <Label htmlFor="customer-select" className="text-gray-700">Select Customer *</Label>
-              <Select 
-                value={saleData.customer_id} 
-                onValueChange={(value) => setSaleData({...saleData, customer_id: value})}
-              >
-                <SelectTrigger id="customer-select" className="w-full rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500">
-                  {loadingCustomers ? (
-                    <span className="text-gray-500">Loading customers...</span>
-                  ) : (
-                    <SelectValue placeholder="Select a customer" />
-                  )}
-                </SelectTrigger>
-                <SelectContent className="rounded-md shadow-lg">
-                  {customers.map(customer => (
-                    <SelectItem key={customer.id} value={customer.id} className="hover:bg-gray-100 cursor-pointer">
-                      {customer.name} ({customer.cnic})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="customer-search" className="text-gray-700">Select Customer *</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="customer-search"
+                  placeholder="Search customer by name, CNIC, or phone..."
+                  value={selectedCustomerName || customerSearchTerm} // Display selected name or search term
+                  onChange={(e) => {
+                    setCustomerSearchTerm(e.target.value);
+                    setSelectedCustomerName(''); // Clear selected name when typing
+                    setSaleData(prev => ({ ...prev, customer_id: '' })); // Clear selected customer ID
+                  }}
+                  className="pl-9 pr-4 py-2 rounded-md border"
+                />
+                {customerSearchTerm && customers.length > 0 && (
+                  <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto mt-1">
+                    {customers.map(customer => (
+                      <div
+                        key={customer.id}
+                        className="p-2 cursor-pointer hover:bg-gray-100"
+                        onClick={() => handleSelectCustomer(customer)}
+                      >
+                        <div className="flex flex-col">
+                          <span>{customer.name} ({customer.cnic})</span>
+                          <span className="text-xs text-muted-foreground text-gray-500">
+                            Phone: {customer.phone}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {customerSearchTerm && customers.length === 0 && !loadingCustomers && (
+                  <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg mt-1 p-2 text-muted-foreground">
+                    No customers found.
+                  </div>
+                )}
+                {loadingCustomers && customerSearchTerm && (
+                  <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg mt-1 p-2 text-muted-foreground">
+                    Loading customers...
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="space-y-3">
-              <Label htmlFor="rickshaw-select" className="text-gray-700">Select Rickshaw *</Label>
-              <Select 
-                value={saleData.rikshaw_id} 
-                onValueChange={(value) => setSaleData({...saleData, rikshaw_id: value})}
-              >
-                <SelectTrigger id="rickshaw-select" className="w-full rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500">
-                  {loadingRikshaws ? (
-                    <span className="text-gray-500">Loading rikshaws...</span>
-                  ) : (
-                    <SelectValue placeholder="Select a rickshaw" />
-                  )}
-                </SelectTrigger>
-                <SelectContent className="rounded-md shadow-lg">
-                  {rikshaws.map(rikshaw => (
-                    <SelectItem key={rikshaw.id} value={rikshaw.id} className="hover:bg-gray-100 cursor-pointer">
-                      <div className="flex flex-col">
-                        <span>{rikshaw.manufacturer} - {rikshaw.model_name}</span>
-                        <span className="text-xs text-muted-foreground text-gray-500">
-                          ENG: {rikshaw.engine_number} | CHS: {rikshaw.chassis_number}
-                        </span>
+              <Label htmlFor="rikshaw-search" className="text-gray-700">Select Rickshaw *</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="rikshaw-search"
+                  placeholder="Search rickshaw by manufacturer, engine, chassis, or reg. no..."
+                  value={selectedRikshawDisplayName || rikshawSearchTerm} // Display selected name or search term
+                  onChange={(e) => {
+                    setRikshawSearchTerm(e.target.value);
+                    setSelectedRikshawDisplayName(''); // Clear selected name when typing
+                    setSaleData(prev => ({ ...prev, rikshaw_id: '' })); // Clear selected rikshaw ID
+                  }}
+                  className="pl-9 pr-4 py-2 rounded-md border"
+                />
+                {rikshawSearchTerm && rikshaws.length > 0 && (
+                  <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto mt-1">
+                    {rikshaws.map(rikshaw => (
+                      <div
+                        key={rikshaw.id}
+                        className="p-2 cursor-pointer hover:bg-gray-100"
+                        onClick={() => handleSelectRikshaw(rikshaw)}
+                      >
+                        <div className="flex flex-col">
+                          <span>{rikshaw.manufacturer} - {rikshaw.model_name}</span>
+                          <span className="text-xs text-muted-foreground text-gray-500">
+                            ENG: {rikshaw.engine_number} | CHS: {rikshaw.chassis_number} | REG: {rikshaw.registration_number || 'N/A'}
+                          </span>
+                        </div>
                       </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    ))}
+                  </div>
+                )}
+                {rikshawSearchTerm && rikshaws.length === 0 && !loadingRikshaws && (
+                  <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg mt-1 p-2 text-muted-foreground">
+                    No rickshaws found.
+                  </div>
+                )}
+                {loadingRikshaws && rikshawSearchTerm && (
+                  <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-md shadow-lg mt-1 p-2 text-muted-foreground">
+                    Loading rickshaws...
+                  </div>
+                )}
+              </div>
             </div>
 
             {saleData.customer_id && (
@@ -814,7 +758,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
 
               <div>
                 <div className="flex justify-between items-center mb-2">
-                  <Label className="text-gray-700">Advance Payments</Label>
+                  <Label className="text-gray-700">Advance Due</Label>
                   {advancePayments.length < 4 && (
                     <Button 
                       size="sm" 
@@ -875,7 +819,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <Label htmlFor="monthly-installment" className="text-gray-700">Monthly Installment (Rs) *</Label>
+                  <Label htmlFor="monthly-installment" className="text-gray-700">Monthly Installment (Rs)</Label> {/* Removed * as it's optional */}
                   <Input
                     id="monthly-installment"
                     type="number"
@@ -884,31 +828,24 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
                       ...saleData, 
                       monthly_installment: parseFloat(e.target.value) || 0
                     })}
-                    required
+                    // Removed 'required' as it's now optional
                     className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
                   />
                 </div>
                 
                 <div>
                   <Label htmlFor="duration-months" className="text-gray-700">Duration (Months) *</Label>
-                  <Select 
-                    value={saleData.duration_months.toString()} 
-                    onValueChange={(value) => setSaleData({
+                  <Input // Changed from Select to Input
+                    id="duration-months"
+                    type="number"
+                    value={saleData.duration_months || ''}
+                    onChange={(e) => setSaleData({
                       ...saleData, 
-                      duration_months: parseInt(value)
+                      duration_months: parseInt(e.target.value) || 0
                     })}
-                  >
-                    <SelectTrigger id="duration-months" className="w-full rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500">
-                      <SelectValue placeholder="Select duration" />
-                    </SelectTrigger>
-                    <SelectContent className="rounded-md shadow-lg">
-                      <SelectItem value="6" className="hover:bg-gray-100 cursor-pointer">6 Months</SelectItem>
-                      <SelectItem value="12" className="hover:bg-gray-100 cursor-pointer">12 Months</SelectItem>
-                      <SelectItem value="18" className="hover:bg-gray-100 cursor-pointer">18 Months</SelectItem>
-                      <SelectItem value="24" className="hover:bg-gray-100 cursor-pointer">24 Months</SelectItem>
-                      <SelectItem value="36" className="hover:bg-gray-100 cursor-pointer">36 Months</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    required
+                    className="rounded-md border border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                  />
                 </div>
               </div>
               
@@ -932,7 +869,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery({
               <Button 
                 size="lg" 
                 onClick={() => setShowPreview(true)}
-                disabled={!saleData.customer_id || !saleData.rikshaw_id || saleData.total_price <= 0 || advancePayments[0].amount <= 0 || !advancePayments[0].date || advancePayments.some((p, i) => i > 0 && (p.amount <= 0 || !p.date))}
+                disabled={!saleData.customer_id || !saleData.rikshaw_id || saleData.total_price <= 0 || advancePayments[0].amount <= 0 || !advancePayments[0].date || advancePayments.some((p, i) => i > 0 && (p.amount <= 0 || !p.date)) || saleData.duration_months <= 0} // Added duration_months validation
                 className="px-8 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-md"
               >
                 Preview Sale

@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc } from 'lucide-react';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, Edit, Save, Loader2 } from 'lucide-react'; // Added Edit, Save, Loader2 icons
 import { format, addMonths, isBefore, isAfter, parseISO } from 'date-fns';
 import { cn } from '@/lib/utils';
 
@@ -70,6 +70,7 @@ interface InstallmentPlan {
   customers: Customer; // Nested customer details
   rikshaws: Rikshaw; // Nested rikshaw details
   created_at: string; // Sale date
+  agreement_date: string; // Added agreement_date
   total_paid_monthly_installments?: number; // Aggregate of only monthly payments
 }
 
@@ -393,6 +394,23 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
   const [installmentNumber, setInstallmentNumber] = useState<number | null>(null);
   const [isRecordingPayment, setIsRecordingPayment] = useState(false);
 
+  // State for editing payments
+  const [editingPayment, setEditingPayment] = useState<InstallmentPayment | null>(null);
+  const [showEditPaymentModal, setShowEditPaymentModal] = useState(false);
+  const [editedAmountPaid, setEditedAmountPaid] = useState<number>(0);
+  const [editedPaymentDate, setEditedPaymentDate] = useState('');
+  const [editedReceivedBy, setEditedReceivedBy] = useState('');
+  const [editedPaymentType, setEditedPaymentType] = useState<'monthly' | 'advance_adjustment'>('monthly');
+  const [editedInstallmentNumber, setEditedInstallmentNumber] = useState<number | null>(null);
+
+  // State for editing plan details
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [editedTotalPrice, setEditedTotalPrice] = useState<number>(0);
+  const [editedAdvanceAgreed, setEditedAdvanceAgreed] = useState<number>(0); // This is plan.advance_payments[0].amount
+  const [editedMonthlyInstallment, setEditedMonthlyInstallment] = useState<number>(0);
+  const [editedDurationMonths, setEditedDurationMonths] = useState<number>(0);
+
+
   // Fetch specific installment plan details
   const { data: planDetails, isLoading: loadingPlanDetails, error: planDetailsError } = useQuery<InstallmentPlan>({
     queryKey: ['installment-plan-details', planId],
@@ -448,6 +466,17 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     }
   }, [paymentsError, toast]);
 
+  // Initialize edited plan details when planDetails loads or changes
+  useEffect(() => {
+    if (planDetails) {
+      setEditedTotalPrice(planDetails.total_price);
+      setEditedAdvanceAgreed(planDetails.advance_payments[0]?.amount || 0); // Use the first advance payment as 'agreed'
+      setEditedMonthlyInstallment(planDetails.monthly_installment);
+      setEditedDurationMonths(planDetails.duration_months);
+    }
+  }, [planDetails]);
+
+
   // Calculate total agreed advance payments (sum of all initial advance payments)
   const totalAgreedAdvance = useMemo(() => {
     if (!planDetails || !planDetails.advance_payments) return 0;
@@ -485,7 +514,8 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
   const monthlySchedule = useMemo(() => {
     if (!planDetails) return [];
     const schedule = [];
-    const saleDate = parseISO(planDetails.created_at);
+    // Use agreement_date instead of created_at for saleDate
+    const saleDate = parseISO(planDetails.agreement_date);
 
     // Create a map of payments by installment number
     const paymentsByInstallment: Record<number, number> = {};
@@ -569,7 +599,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         title: "Payment Recorded!",
         description: `Rs ${amountPaid.toLocaleString()} received for ${paymentType === 'monthly' ? 'monthly installment' : 'advance adjustment'}.`,
       });
-      generatePaymentReceipt(data);
+      // Removed generatePaymentReceipt(data); as per user request
       setShowRecordPaymentForm(false);
       setAmountPaid(0);
       setReceivedBy('');
@@ -585,6 +615,121 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     },
     onSettled: () => setIsRecordingPayment(false)
   });
+
+  // Mutation to update an existing payment
+  const updatePaymentMutation = useMutation({
+    mutationFn: async (updatedPayment: InstallmentPayment) => {
+      const { data, error } = await supabase
+        .from('installment_payments')
+        .update({
+          payment_date: updatedPayment.payment_date,
+          amount_paid: updatedPayment.amount_paid,
+          received_by: updatedPayment.received_by,
+          payment_type: updatedPayment.payment_type,
+          installment_number: updatedPayment.installment_number
+        })
+        .eq('id', updatedPayment.id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['installment-payments', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] });
+      toast({
+        title: "Payment Updated!",
+        description: "Payment details have been successfully updated.",
+      });
+      setShowEditPaymentModal(false);
+      setEditingPayment(null);
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error updating payment",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  });
+
+  // Mutation to update the installment plan details
+  const updateInstallmentPlanMutation = useMutation({
+    mutationFn: async (updatedPlan: {
+      total_price: number;
+      advance_paid: number; // This needs to be stored as the initial advance payment
+      monthly_installment: number;
+      duration_months: number;
+      // advance_payments array is not directly updated here, it represents initial payments
+    }) => {
+      // For 'advance_paid', we need to update the *first* entry in the advance_payments JSONB array.
+      // Fetch the current advance_payments array
+      const { data: currentPlanData, error: fetchError } = await supabase
+        .from('installment_plans')
+        .select('advance_payments')
+        .eq('id', planId)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      const currentAdvancePayments = currentPlanData?.advance_payments || [];
+      const updatedAdvancePayments = [...currentAdvancePayments];
+
+      // Update the first advance payment amount if it exists
+      if (updatedAdvancePayments.length > 0) {
+        updatedAdvancePayments[0] = {
+          ...updatedAdvancePayments[0],
+          amount: updatedPlan.advance_paid,
+        };
+      } else {
+        // If no advance payments exist, add one with today's date
+        updatedAdvancePayments.push({
+          amount: updatedPlan.advance_paid,
+          date: format(new Date(), 'yyyy-MM-dd'),
+        });
+      }
+
+
+      const { data, error } = await supabase
+        .from('installment_plans')
+        .update({
+          total_price: updatedPlan.total_price,
+          // advance_paid in the main table row should reflect the sum of actual collected advances,
+          // or specifically the *first* advance collected if that's the business rule.
+          // For now, setting it to the editedAdvanceAgreed, assuming that's the new 'initial' advance.
+          advance_paid: updatedPlan.advance_paid,
+          advance_payments: updatedAdvancePayments, // Update the JSONB array
+          monthly_installment: updatedPlan.monthly_installment,
+          duration_months: updatedPlan.duration_months,
+        })
+        .eq('id', planId)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] }); // Important for overall status recalculation
+      toast({
+        title: "Plan Updated!",
+        description: "Installment plan details have been successfully updated.",
+      });
+      setIsEditingPlan(false); // Exit edit mode
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error updating plan",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  });
+
 
   // Handle recording payment submission
   const handleRecordPayment = () => {
@@ -604,8 +749,8 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       toast({ title: "Error", description: "Received by name is required.", variant: "destructive" });
       return;
     }
-    if (paymentType === 'monthly' && installmentNumber === null) {
-      toast({ title: "Error", description: "Please select an installment number.", variant: "destructive" });
+    if (paymentType === 'monthly' && (installmentNumber === null || installmentNumber <= 0)) {
+      toast({ title: "Error", description: "Please select a valid installment number.", variant: "destructive" });
       return;
     }
 
@@ -619,161 +764,76 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     });
   };
 
-  // Generate Payment Receipt
-  const generatePaymentReceipt = (paymentRecord: InstallmentPayment) => {
-    if (!planDetails) return;
+  // Handle edit payment submission
+  const handleEditPaymentSubmit = () => {
+    if (!editingPayment) return;
 
-    // Calculate new remaining balance considering the current payment being recorded
-    const tempOverallTotalPaid = overallTotalPaid + paymentRecord.amount_paid;
-    const newRemainingBalance = Math.max(0, planDetails.total_price - tempOverallTotalPaid);
-
-    const receiptWindow = window.open('', '_blank');
-
-    if (receiptWindow) {
-      receiptWindow.document.write(`
-        <html>
-          <head>
-            <title>Payment Receipt</title>
-            <style>
-              body {
-                font-family: 'Segoe UI', Tahoma, sans-serif;
-                padding: 40px;
-                max-width: 800px;
-                margin: 0 auto;
-                color: #1f2937;
-                background-color: #ffffff;
-              }
-
-              .header {
-                text-align: center;
-                margin-bottom: 30px;
-                border-bottom: 3px solid #1e3a8a;
-                padding-bottom: 10px;
-              }
-
-              .header .title {
-                font-size: 28px;
-                font-weight: 800;
-                color: #1e3a8a;
-                text-transform: uppercase;
-              }
-
-              .header .subtitle {
-                font-size: 14px;
-                color: #6b7280;
-              }
-
-              .section-title {
-                font-size: 20px;
-                font-weight: bold;
-                color: #1e40af;
-                margin-bottom: 10px;
-                border-bottom: 2px solid #e5e7eb;
-                padding-bottom: 5px;
-              }
-
-              .details {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 10px;
-                font-size: 14px;
-                margin-bottom: 20px;
-              }
-
-              .detail-item {
-                margin-bottom: 6px;
-              }
-
-              .detail-label {
-                font-weight: 600;
-                color: #374151;
-              }
-
-              .total-box {
-                background-color: #f0f9ff;
-                border-left: 4px solid #3b82f6;
-                padding: 15px;
-                font-weight: 600;
-                font-size: 16px;
-                text-align: center;
-                border-radius: 6px;
-                margin-top: 30px;
-                color: #0c4a6e;
-              }
-
-              .footer {
-                margin-top: 40px;
-                text-align: center;
-                font-size: 12px;
-                color: #6b7280;
-                border-top: 1px solid #e5e7eb;
-                padding-top: 10px;
-              }
-
-              .print-button-container {
-                margin-top: 30px;
-                text-align: center;
-              }
-
-              .print-button {
-                background-color: #1e3a8a;
-                color: white;
-                padding: 10px 20px;
-                border: none;
-                border-radius: 5px;
-                font-size: 16px;
-                cursor: pointer;
-              }
-
-              @media print {
-                .print-button-container { display: none; }
-              }
-            </style>
-          </head>
-          <body>
-            <div class="header">
-              <div class="title">AL-HAMD TRADERS</div>
-              <div class="subtitle">Railway Road Chowk Shamah, Sargodha</div>
-            </div>
-
-            <div class="section">
-              <div class="section-title">Payment Receipt</div>
-              <div class="details">
-                <div class="detail-item"><span class="detail-label">Receipt #:</span> ${paymentRecord.id.substring(0, 8)}</div>
-                <div class="detail-item"><span class="detail-label">Payment Date:</span> ${new Date(paymentRecord.payment_date).toLocaleDateString()}</div>
-                <div class="detail-item"><span class="detail-label">Customer:</span> ${planDetails.customers.name}</div>
-                <div class="detail-item"><span class="detail-label">CNIC:</span> ${planDetails.customers.cnic}</div>
-                <div class="detail-item"><span class="detail-label">Rickshaw:</span> ${planDetails.rikshaws.model_name} (${planDetails.rikshaws.registration_number})</div>
-                <div class="detail-item"><span class="detail-label">Payment Type:</span> ${paymentRecord.payment_type === 'monthly' ? 'Monthly Installment' : 'Advance Payment Adjustment'}</div>
-                ${
-                  paymentRecord.payment_type === 'monthly' && paymentRecord.installment_number
-                    ? `<div class="detail-item"><span class="detail-label">Installment #:</span> ${paymentRecord.installment_number}</div>`
-                    : ''
-                }
-                <div class="detail-item"><span class="detail-label">Amount Paid:</span> Rs ${paymentRecord.amount_paid.toLocaleString()}</div>
-                <div class="detail-item"><span class="detail-label">Received By:</span> ${paymentRecord.received_by}</div>
-              </div>
-            </div>
-
-            <div class="total-box">
-              Remaining Balance: Rs ${newRemainingBalance.toLocaleString()}
-            </div>
-
-            <div class="footer">
-              Thank you for your business! For any queries, contact: 0300-1234567
-            </div>
-
-            <div class="print-button-container">
-              <button class="print-button" onclick="window.print()">🖨️ Print Receipt</button>
-            </div>
-          </body>
-        </html>
-      `);
-
-      receiptWindow.document.close();
+    if (editedAmountPaid <= 0) {
+      toast({ title: "Error", description: "Amount paid must be greater than 0.", variant: "destructive" });
+      return;
     }
+    if (!editedPaymentDate) {
+      toast({ title: "Error", description: "Payment date is required.", variant: "destructive" });
+      return;
+    }
+    if (!editedReceivedBy.trim()) {
+      toast({ title: "Error", description: "Received by name is required.", variant: "destructive" });
+      return;
+    }
+    if (editedPaymentType === 'monthly' && (editedInstallmentNumber === null || editedInstallmentNumber <= 0)) {
+      toast({ title: "Error", description: "Please select a valid installment number for monthly payment.", variant: "destructive" });
+      return;
+    }
+
+    updatePaymentMutation.mutate({
+      ...editingPayment,
+      amount_paid: editedAmountPaid,
+      payment_date: editedPaymentDate,
+      received_by: editedReceivedBy.trim(),
+      payment_type: editedPaymentType,
+      installment_number: editedPaymentType === 'monthly' ? editedInstallmentNumber : null
+    });
   };
 
+  // Handle edit plan submission
+  const handleEditPlanSubmit = () => {
+    if (!planDetails) return;
+
+    if (editedTotalPrice <= 0) {
+      toast({ title: "Error", description: "Total Price must be greater than 0.", variant: "destructive" });
+      return;
+    }
+    if (editedAdvanceAgreed < 0) {
+      toast({ title: "Error", description: "Agreed Advance Amount cannot be negative.", variant: "destructive" });
+      return;
+    }
+    if (editedMonthlyInstallment < 0) { // Monthly installment can be 0 if total price is paid by advance
+      toast({ title: "Error", description: "Monthly Installment cannot be negative.", variant: "destructive" });
+      return;
+    }
+    if (editedDurationMonths <= 0) {
+      toast({ title: "Error", description: "Duration in Months must be greater than 0.", variant: "destructive" });
+      return;
+    }
+
+    updateInstallmentPlanMutation.mutate({
+      total_price: editedTotalPrice,
+      advance_paid: editedAdvanceAgreed,
+      monthly_installment: editedMonthlyInstallment,
+      duration_months: editedDurationMonths,
+    });
+  };
+
+
+  const openEditPaymentModal = (payment: InstallmentPayment) => {
+    setEditingPayment(payment);
+    setEditedAmountPaid(payment.amount_paid);
+    setEditedPaymentDate(payment.payment_date);
+    setEditedReceivedBy(payment.received_by);
+    setEditedPaymentType(payment.payment_type);
+    setEditedInstallmentNumber(payment.installment_number);
+    setShowEditPaymentModal(true);
+  };
 
   if (loadingPlanDetails || loadingPayments) {
     return (
@@ -835,6 +895,8 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       printWindow.print();
     }
   };
+
+  const isPlanCompleted = remainingBalanceOnPlan <= 0;
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -904,38 +966,111 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
 
             {/* Overall Payment Summary */}
             <Card className="border bg-blue-50">
-              <CardHeader className="pb-2">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between">
                 <CardTitle className="text-lg text-blue-700">Payment Summary</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditingPlan(!isEditingPlan)}
+                  className="flex items-center gap-1"
+                >
+                  {isEditingPlan ? (
+                    <>
+                      <X className="h-4 w-4" /> Cancel Edit
+                    </>
+                  ) : (
+                    <>
+                      <Edit className="h-4 w-4" /> Edit Plan
+                    </>
+                  )}
+                </Button>
               </CardHeader>
               <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                <div>
-                  <p className="text-muted-foreground">Total Price:</p>
-                  <p className="font-bold text-lg">Rs {planDetails.total_price?.toLocaleString()}</p>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Total Price:</Label>
+                  {isEditingPlan ? (
+                    <Input
+                      type="number"
+                      value={editedTotalPrice}
+                      onChange={(e) => setEditedTotalPrice(parseFloat(e.target.value) || 0)}
+                      className="font-bold text-lg"
+                    />
+                  ) : (
+                    <p className="font-bold text-lg">Rs {planDetails.total_price?.toLocaleString()}</p>
+                  )}
                 </div>
-                <div>
-                  <p className="text-muted-foreground">Agreed Advance Amount:</p>
-                  <p className="font-bold text-lg">Rs {totalAgreedAdvance.toLocaleString()}</p>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Agreed Advance Amount:</Label>
+                  {isEditingPlan ? (
+                    <Input
+                      type="number"
+                      value={editedAdvanceAgreed}
+                      onChange={(e) => setEditedAdvanceAgreed(parseFloat(e.target.value) || 0)}
+                      className="font-bold text-lg"
+                    />
+                  ) : (
+                    <p className="font-bold text-lg">Rs {totalAgreedAdvance.toLocaleString()}</p>
+                  )}
                 </div>
-                <div>
-                  <p className="text-muted-foreground">Collected Advance:</p>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Collected Advance:</Label>
+                  {/* Collected Advance is not directly editable here as it sums actual payments, 
+                      but editedAdvanceAgreed maps to the first advance payment in DB */}
                   <p className="font-bold text-lg">Rs {collectedAdvance.toLocaleString()}</p>
                 </div>
-                <div>
-                  <p className="text-muted-foreground">Monthly Installment:</p>
-                  <p className="font-bold text-lg">Rs {planDetails.monthly_installment?.toLocaleString()}</p>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Monthly Installment:</Label>
+                  {isEditingPlan ? (
+                    <Input
+                      type="number"
+                      value={editedMonthlyInstallment}
+                      onChange={(e) => setEditedMonthlyInstallment(parseFloat(e.target.value) || 0)}
+                      className="font-bold text-lg"
+                    />
+                  ) : (
+                    <p className="font-bold text-lg">Rs {planDetails.monthly_installment?.toLocaleString()}</p>
+                  )}
                 </div>
-                <div>
-                  <p className="text-muted-foreground">Duration:</p>
-                  <p className="font-bold text-lg">{planDetails.duration_months} months</p>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Duration:</Label>
+                  {isEditingPlan ? (
+                    <Input
+                      type="number"
+                      value={editedDurationMonths}
+                      onChange={(e) => setEditedDurationMonths(parseInt(e.target.value) || 0)}
+                      className="font-bold text-lg"
+                    />
+                  ) : (
+                    <p className="font-bold text-lg">{planDetails.duration_months} months</p>
+                  )}
                 </div>
-                <div>
+                {/* Re-added Remaining Advance Balance and Overall Remaining Balance */}
+                <div className="space-y-2">
                   <p className="text-muted-foreground">Remaining Advance Balance:</p>
                   <p className="font-bold text-lg text-orange-700">Rs {remainingAgreedAdvanceDue.toLocaleString()}</p>
                 </div>
-                <div className="md:col-span-3">
+                <div className="md:col-span-3 space-y-2">
                   <p className="text-muted-foreground">Overall Remaining Balance:</p>
                   <p className="font-bold text-2xl text-green-700">Rs {remainingBalanceOnPlan.toLocaleString()}</p>
                 </div>
+                {isEditingPlan && (
+                  <div className="md:col-span-3 flex justify-end">
+                    <Button
+                      onClick={handleEditPlanSubmit}
+                      disabled={updateInstallmentPlanMutation.isPending}
+                    >
+                      {updateInstallmentPlanMutation.isPending ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="mr-2 h-4 w-4" /> Save Plan Changes
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -979,7 +1114,11 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                 <CardTitle className="text-lg">Monthly Installment Schedule</CardTitle>
               </CardHeader>
               <CardContent>
-                {monthlySchedule.length > 0 ? (
+                {isPlanCompleted ? (
+                  <div className="text-center py-8 text-green-600 font-semibold text-lg">
+                    Plan Completed! All installments have been paid.
+                  </div>
+                ) : monthlySchedule.length > 0 ? (
                   <div className="overflow-x-auto rounded-md border">
                     <Table>
                       <TableHeader>
@@ -1036,6 +1175,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                           <TableHead>Type</TableHead>
                           <TableHead>Installment #</TableHead>
                           <TableHead>Received By</TableHead>
+                          <TableHead className="text-right">Actions</TableHead> {/* New column for actions */}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1050,6 +1190,15 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                                 : '-'}
                             </TableCell>
                             <TableCell>{payment.received_by}</TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openEditPaymentModal(payment)}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -1115,6 +1264,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                       value={amountPaid || ''}
                       onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
                       required
+                      className="rounded-md border"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1125,6 +1275,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                       value={paymentDate}
                       onChange={(e) => setPaymentDate(e.target.value)}
                       required
+                      className="rounded-md border"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1136,6 +1287,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                       value={receivedBy}
                       onChange={(e) => setReceivedBy(e.target.value)}
                       required
+                      className="rounded-md border"
                     />
                   </div>
                 </div>
@@ -1145,7 +1297,11 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                     disabled={isRecordingPayment}
                     className="px-6 bg-green-600 hover:bg-green-700"
                   >
-                    {isRecordingPayment ? "Recording..." : "Record Payment"}
+                    {isRecordingPayment ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Recording...
+                      </>
+                    ) : "Record Payment"}
                   </Button>
                 </div>
               </CardContent>
@@ -1159,9 +1315,105 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
-
         </DialogFooter>
       </DialogContent>
+
+      {/* Edit Payment Modal */}
+      {editingPayment && (
+        <Dialog open={showEditPaymentModal} onOpenChange={setShowEditPaymentModal}>
+          <DialogContent className="max-w-md p-6">
+            <DialogHeader>
+              <DialogTitle>Edit Payment</DialogTitle>
+              <DialogDescription>
+                Modify the details for this payment record.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-payment-type">Payment Type *</Label>
+                <Select
+                  value={editedPaymentType}
+                  onValueChange={(value: 'monthly' | 'advance_adjustment') => setEditedPaymentType(value)}
+                >
+                  <SelectTrigger id="edit-payment-type">
+                    <SelectValue placeholder="Select payment type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">Monthly Installment</SelectItem>
+                    <SelectItem value="advance_adjustment">Advance Payment Adjustment</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {editedPaymentType === 'monthly' && (
+                <div className="space-y-2">
+                  <Label htmlFor="edit-installment-number">Installment # *</Label>
+                  <Select
+                    value={editedInstallmentNumber?.toString() || ''}
+                    onValueChange={(value) => setEditedInstallmentNumber(parseInt(value))}
+                  >
+                    <SelectTrigger id="edit-installment-number">
+                      <SelectValue placeholder="Select installment number" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {monthlySchedule.map(item => (
+                        <SelectItem key={item.installment_number} value={item.installment_number.toString()}>
+                          Installment #{item.installment_number} (Due: Rs {item.expected_amount.toLocaleString()})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="edit-amount-paid">Amount Paid (Rs) *</Label>
+                <Input
+                  id="edit-amount-paid"
+                  type="number"
+                  value={editedAmountPaid || ''}
+                  onChange={(e) => setEditedAmountPaid(parseFloat(e.target.value) || 0)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-payment-date">Payment Date *</Label>
+                <Input
+                  id="edit-payment-date"
+                  type="date"
+                  value={editedPaymentDate}
+                  onChange={(e) => setEditedPaymentDate(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-received-by">Received By *</Label>
+                <Input
+                  id="edit-received-by"
+                  type="text"
+                  value={editedReceivedBy}
+                  onChange={(e) => setEditedReceivedBy(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowEditPaymentModal(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleEditPaymentSubmit} disabled={updatePaymentMutation.isPending}>
+                {updatePaymentMutation.isPending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="mr-2 h-4 w-4" /> Save Changes
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </Dialog>
   );
 };

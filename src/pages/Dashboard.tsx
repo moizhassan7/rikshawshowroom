@@ -1,407 +1,620 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
-import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle
-} from '@/components/ui/card';
-import {
-  Tabs, TabsContent, TabsList, TabsTrigger
-} from '@/components/ui/tabs';
-import {
-  Car, Users, CreditCard, TrendingUp, AlertCircle
-} from 'lucide-react';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell
-} from 'recharts';
-import DashboardHeader from '@/components/dashboard/DashboardHeader';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useToast } from '@/hooks/use-toast';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, TrendingUp, AlertCircle, Clock, CheckCircle, Users, ShoppingCart, TrendingDown } from 'lucide-react'; // Added ShoppingCart and TrendingDown for new metrics
+import { format, addMonths, isBefore, isAfter, parseISO, startOfMonth, endOfMonth, eachMonthOfInterval, startOfYear, endOfYear, getMonth, getYear } from 'date-fns';
+import { cn } from '@/lib/utils';
+
+// Interface definitions for data structures (re-used and updated)
+interface Customer {
+  id: string;
+  name: string;
+  address: string;
+  cnic: string;
+  phone: string;
+  guarantor_name: string;
+  guarantor_cnic: string;
+  guarantor_phone: string;
+  guarantor_address: string;
+  bank_name: string;
+  cheque_number: string;
+}
+
+interface Rikshaw {
+  id: string;
+  manufacturer: string;
+  model_name: string;
+  engine_number: string;
+  chassis_number: string;
+  registration_number: string | null;
+  type: string;
+  availability: string; // 'sold', 'unsold'
+  purchase_date: string; // Added purchase_date
+  purchase_price: number; // Added purchase_price
+  sale_price: number | null; // Added sale_price
+}
+
+interface AdvancePayment {
+  amount: number;
+  date: string;
+}
+
+interface InstallmentPlan {
+  id: string;
+  customer_id: string;
+  rikshaw_id: string;
+  total_price: number;
+  advance_paid: number; // Total advance amount agreed upon - This will now be the sum of all initial advance payments
+  advance_payments: AdvancePayment[]; // Array of initial individual advance payments made at sale time
+  monthly_installment: number;
+  duration_months: number;
+  guarantor_name: string;
+  guarantor_cnic: string;
+  guarantor_phone: string;
+  guarantor_address: string;
+  bank_name: string;
+  cheque_number: string;
+  rikshaw_details: {
+    manufacturer: string;
+    model_name: string;
+    engine_number: string;
+    chassis_number: string;
+    registration_number: string;
+    type: string;
+  };
+  customers: Customer; // Nested customer details
+  rikshaws: Rikshaw; // Nested rikshaw details (updated to include purchase/sale price)
+  created_at: string; // Sale date
+  total_paid_monthly_installments?: number; // Aggregate of only monthly payments
+}
+
+interface InstallmentPayment {
+  id: string;
+  installment_plan_id: string;
+  payment_date: string; // ISO string 'YYYY-MM-DD'
+  amount_paid: number;
+  received_by: string;
+  payment_type: 'monthly' | 'advance_adjustment';
+  installment_number?: number | null; // New field for monthly installment number
+  created_at: string;
+}
+
+// Dashboard specific interfaces
+interface UpcomingInstallment {
+  planId: string;
+  customerName: string;
+  rikshawDetails: string;
+  type: 'monthly' | 'advance';
+  installmentNumber?: number;
+  amountDue: number;
+  dueDate: string;
+  status: 'due' | 'overdue';
+}
 
 const Dashboard = () => {
-  const [dateRange] = useState('30'); // Can be used for filtering later
+  const { toast } = useToast();
 
-  const { data: stats, isLoading, isError } = useQuery({
-    queryKey: ['dashboard-stats'],
+  const currentMonthStart = format(startOfMonth(new Date()), 'yyyy-MM-dd');
+  const currentMonthEnd = format(endOfMonth(new Date()), 'yyyy-MM-dd');
+
+  // Fetch total rickshaws
+  const { data: totalRickshaws = 0, isLoading: loadingTotalRickshaws } = useQuery<number>({
+    queryKey: ['total-rikshaws'],
     queryFn: async () => {
-      try {
-        // Calculate date range for upcoming installments (next 7 days)
-        const today = new Date();
-        const sevenDaysLater = new Date();
-        sevenDaysLater.setDate(today.getDate() + 7);
-        
-        const todayStr = today.toISOString().split('T')[0];
-        const sevenDaysLaterStr = sevenDaysLater.toISOString().split('T')[0];
-
-        // Fetch all required data in parallel
-        const [
-          { count: totalRikshaws, error: rikshawsError },
-          { count: totalCustomers, error: customersError },
-          { data: installmentPlans, error: plansError },
-          { data: upcomingInstallments, error: installmentsError },
-          { data: availableRikshaws, error: availableError },
-          { data: soldRikshaws, error: soldError },
-          { data: paidInstallments, error: paidError }
-        ] = await Promise.all([
-          supabase.from('rikshaws').select('*', { count: 'exact', head: true }),
-          supabase.from('customers').select('*', { count: 'exact', head: true }),
-          supabase.from('installment_plans').select('*'),
-          supabase.from('installments')
-            .select('*, installment_plans(customer_id, customers(name))')
-            .gte('due_date', todayStr)
-            .lte('due_date', sevenDaysLaterStr)
-            .eq('status', 'unpaid')
-            .order('due_date', { ascending: true }),
-          supabase.from('rikshaws').select('*').eq('status', 'available'),
-          supabase.from('rikshaws').select('*').eq('status', 'sold'),
-          // Fetch all paid installments
-          supabase.from('installments')
-            .select('amount')
-            .eq('status', 'paid')
-        ]);
-
-        // Handle any errors
-        const errors = [
-          rikshawsError, customersError, plansError, 
-          installmentsError, availableError, soldError, paidError
-        ].filter(Boolean);
-        
-        if (errors.length > 0) {
-          throw new Error(`Database errors: ${errors.map(e => e.message).join(', ')}`);
-        }
-
-        // Calculate advance payments
-        const advancePayments = installmentPlans?.reduce(
-          (sum, plan) => sum + Number(plan.advance_paid || 0),
-          0
-        ) || 0;
-
-        // Calculate paid installments
-        const paidAmount = paidInstallments?.reduce(
-          (sum, installment) => sum + Number(installment.amount || 0),
-          0
-        ) || 0;
-
-        // Total revenue is advance payments + paid installments
-        const totalRevenue = advancePayments + paidAmount;
-
-        // 🟦 Dynamic Sales Data by Month
-        const salesByMonth = soldRikshaws?.reduce((acc, rikshaw) => {
-          const date = new Date(rikshaw.created_at);
-          const month = date.toLocaleString('default', { month: 'short' });
-          const year = date.getFullYear();
-          const key = `${month} ${year}`;
-
-          if (!acc[key]) {
-            acc[key] = { month: key, sales: 0, revenue: 0 };
-          }
-
-          acc[key].sales += 1;
-          acc[key].revenue += Number(rikshaw.advance_paid || 0);
-          return acc;
-        }, {}) || {};
-
-        const salesData = Object.values(salesByMonth).sort((a, b) => {
-          return new Date(`1 ${a.month}`) - new Date(`1 ${b.month}`);
-        });
-
-        const statusData = [
-          {
-            name: 'Available',
-            value: availableRikshaws?.length || 0,
-            color: '#10b981',
-          },
-          {
-            name: 'Sold',
-            value: soldRikshaws?.length || 0,
-            color: '#3b82f6',
-          },
-        ];
-
-        return {
-          totalRikshaws,
-          totalCustomers,
-          totalRevenue,
-          advancePayments,
-          paidAmount,
-          availableRikshaws: availableRikshaws?.length || 0,
-          soldRikshaws: soldRikshaws?.length || 0,
-          installmentPlans: installmentPlans || [],
-          upcomingInstallments: upcomingInstallments || [],
-          salesData,
-          statusData
-        };
-      } catch (error) {
-        console.error('Dashboard query error:', error);
-        throw error;
-      }
+      const { count, error } = await supabase
+        .from('rikshaws')
+        .select('*', { count: 'exact', head: true });
+      if (error) throw error;
+      return count || 0;
     }
   });
 
-  if (isLoading) {
-    return (
-      <div className="space-y-8">
-        <DashboardHeader />
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {[...Array(4)].map((_, i) => (
-            <Card key={i}>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-4 w-4 rounded-full" />
-              </CardHeader>
-              <CardContent>
-                <Skeleton className="h-8 w-16 mb-2" />
-                <Skeleton className="h-3 w-32" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      </div>
-    );
-  }
+  // Fetch rickshaws sold this month (count of installment plans created this month)
+  const { data: soldThisMonth = 0, isLoading: loadingSoldThisMonth } = useQuery<number>({
+    queryKey: ['sold-this-month-count'],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from('installment_plans')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', currentMonthStart)
+        .lte('created_at', currentMonthEnd);
+      if (error) throw error;
+      return count || 0;
+    }
+  });
 
-  if (isError || !stats) {
-    return (
-      <div className="space-y-8">
-        <DashboardHeader />
-        <div className="text-center py-12">
-          <AlertCircle className="h-12 w-12 mx-auto mb-4 text-red-500" />
-          <h2 className="text-xl font-bold mb-2">Failed to load dashboard data</h2>
-          <p className="text-muted-foreground mb-4">
-            We couldn't retrieve your dashboard information. Please try again.
-          </p>
-          <button 
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            onClick={() => window.location.reload()}
-          >
-            Reload Dashboard
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Fetch total customers
+  const { data: totalCustomers = 0, isLoading: loadingTotalCustomers } = useQuery<number>({
+    queryKey: ['total-customers'],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from('customers')
+        .select('*', { count: 'exact', head: true });
+      if (error) throw error;
+      return count || 0;
+    }
+  });
+
+  // Fetch all installment plans with customer and rikshaw details
+  const { data: installmentPlans = [], isLoading: loadingPlans, error: plansError } = useQuery<InstallmentPlan[]>({
+    queryKey: ['dashboard-installment-plans'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('installment_plans')
+        .select(`
+          *,
+          customers!inner (name, cnic),
+          rikshaws!inner (model_name, registration_number, type, purchase_price, sale_price)
+        `);
+      if (error) throw error;
+      return data as InstallmentPlan[];
+    }
+  });
+
+  // Fetch all payments for calculations
+  const { data: allInstallmentPayments = [], isLoading: loadingAllPayments, error: allPaymentsError } = useQuery<InstallmentPayment[]>({
+    queryKey: ['dashboard-all-installment-payments'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('installment_payments')
+        .select('*');
+      if (error) throw error;
+      return data as InstallmentPayment[];
+    }
+  });
+
+  // Fetch rickshaws purchased this month for investment calculation
+  const { data: currentMonthPurchases = [], isLoading: loadingCurrentMonthPurchases } = useQuery<Rikshaw[]>({
+    queryKey: ['current-month-purchases'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('rikshaws')
+        .select('purchase_price')
+        .gte('purchase_date', currentMonthStart)
+        .lte('purchase_date', currentMonthEnd);
+      if (error) throw error;
+      return data as Rikshaw[];
+    }
+  });
+
+  // Handle errors for fetching data
+  useEffect(() => {
+    if (plansError) {
+      toast({
+        title: "Error fetching dashboard plans",
+        description: plansError.message,
+        variant: "destructive",
+      });
+    }
+    if (allPaymentsError) {
+      toast({
+        title: "Error fetching dashboard payments",
+        description: allPaymentsError.message,
+        variant: "destructive",
+      });
+    }
+  }, [plansError, allPaymentsError, toast]);
+
+  // Calculate total revenue (from all installment plans)
+  const totalRevenue = useMemo(() => {
+    return installmentPlans.reduce((sum, plan) => sum + plan.total_price, 0);
+  }, [installmentPlans]);
+
+  // Calculate total payments received (from all payments)
+  const totalPaymentsReceived = useMemo(() => {
+    const initialAdvancesFromPlans = installmentPlans.reduce((sum, plan) =>
+      sum + (plan.advance_payments[0]?.amount || 0), 0);
+
+    const recordedPayments = allInstallmentPayments.reduce((sum, payment) => sum + payment.amount_paid, 0);
+    return initialAdvancesFromPlans + recordedPayments;
+
+  }, [installmentPlans, allInstallmentPayments]);
+
+  // Calculate remaining balance for a single plan
+  const calculateRemainingBalance = useCallback((plan: InstallmentPlan, payments: InstallmentPayment[]) => {
+    const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
+    const totalMonthlyPaymentsReceived = payments.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
+    const totalAdvanceAdjustmentsCollected = payments.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+
+    const overallTotalPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected;
+    return plan.total_price - overallTotalPaid;
+  }, []);
+
+  // Calculate total remaining balance across all plans
+  const totalRemainingBalance = useMemo(() => {
+    if (loadingPlans || loadingAllPayments) return 0;
+    return installmentPlans.reduce((sum, plan) => {
+      const paymentsForPlan = allInstallmentPayments.filter(p => p.installment_plan_id === plan.id);
+      return sum + calculateRemainingBalance(plan, paymentsForPlan);
+    }, 0);
+  }, [installmentPlans, allInstallmentPayments, loadingPlans, loadingAllPayments, calculateRemainingBalance]);
+
+  // Function to calculate plan status
+  const getPlanStatus = useCallback((plan: InstallmentPlan, allPayments: InstallmentPayment[]) => {
+    const paymentsForPlan = allPayments.filter(p => p.installment_plan_id === plan.id);
+
+    const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+    const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
+    const totalAdvanceAdjustmentsCollected = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+    const collectedAdvance = initialFirstAdvance + totalAdvanceAdjustmentsCollected;
+
+    const totalMonthlyPaymentsReceived = paymentsForPlan.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
+    const overallTotalPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected;
+
+    if (overallTotalPaid >= plan.total_price) {
+      return 'Completed';
+    }
+
+    const remainingAgreedAdvanceDue = totalAgreedAdvance - collectedAdvance;
+    if (remainingAgreedAdvanceDue > 0) {
+      return 'Advance Pending';
+    }
+
+    const saleDate = parseISO(plan.created_at);
+    const today = new Date();
+    let installmentsDueCount = 0;
+    for (let i = 1; i <= plan.duration_months; i++) {
+      const dueDate = addMonths(saleDate, i);
+      if (isBefore(dueDate, today) || format(dueDate, 'yyyy-MM-dd') === format(today, 'yyyy-MM-dd')) {
+        installmentsDueCount++;
+      } else {
+        break;
+      }
+    }
+
+    const expectedMonthlyPaid = installmentsDueCount * plan.monthly_installment;
+
+    if (totalMonthlyPaymentsReceived >= expectedMonthlyPaid) {
+      return 'Active';
+    } else if (totalMonthlyPaymentsReceived < expectedMonthlyPaid && installmentsDueCount > 0) {
+      return 'Overdue';
+    }
+
+    return 'Not Active';
+  }, []);
+
+  // Calculate overdue and advance pending counts
+  const overdueInstallmentsCount = useMemo(() => {
+    if (loadingPlans || loadingAllPayments) return 0;
+    return installmentPlans.filter(plan => getPlanStatus(plan, allInstallmentPayments) === 'Overdue').length;
+  }, [installmentPlans, allInstallmentPayments, loadingPlans, loadingAllPayments, getPlanStatus]);
+
+  const advancePendingCount = useMemo(() => {
+    if (loadingPlans || loadingAllPayments) return 0;
+    return installmentPlans.filter(plan => getPlanStatus(plan, allInstallmentPayments) === 'Advance Pending').length;
+  }, [installmentPlans, allInstallmentPayments, loadingPlans, loadingAllPayments, getPlanStatus]);
+
+  // Calculate total investment in purchased rickshaws this month
+  const currentMonthInvestment = useMemo(() => {
+    if (loadingCurrentMonthPurchases) return 0;
+    return currentMonthPurchases.reduce((sum: number, rikshaw: Rikshaw) => sum + (rikshaw.purchase_price || 0), 0);
+  }, [currentMonthPurchases, loadingCurrentMonthPurchases]);
+
+  // Calculate profit for this month's sales
+  const currentMonthProfit = useMemo(() => {
+    if (loadingPlans) return 0;
+    let totalSalePrice = 0;
+    let totalPurchasePrice = 0;
+
+    // Filter installment plans created in the current month
+    const salesThisMonthPlans = installmentPlans.filter(plan => {
+      const planDate = parseISO(plan.created_at);
+      return isAfter(planDate, startOfMonth(new Date())) && isBefore(planDate, endOfMonth(new Date()));
+    });
+
+    salesThisMonthPlans.forEach(plan => {
+      // Access the nested rikshaws object for prices
+      if (plan.rikshaws) {
+        totalSalePrice += plan.rikshaws.sale_price || 0;
+        totalPurchasePrice += plan.rikshaws.purchase_price || 0;
+      }
+    });
+    return totalSalePrice - totalPurchasePrice;
+  }, [installmentPlans, loadingPlans]);
+
+
+  // Generate upcoming installments for the next 6 months
+  const upcomingInstallments = useMemo(() => {
+    if (loadingPlans || loadingAllPayments) return [];
+
+    const upcoming: UpcomingInstallment[] = [];
+    const today = new Date();
+    const sixMonthsFromNow = addMonths(today, 6);
+
+    installmentPlans.forEach(plan => {
+      const paymentsForPlan = allInstallmentPayments.filter(p => p.installment_plan_id === plan.id);
+
+      // Check for remaining advance due
+      const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+      const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
+      const totalAdvanceAdjustmentsCollected = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+      const collectedAdvance = initialFirstAdvance + totalAdvanceAdjustmentsCollected;
+      const remainingAgreedAdvanceDue = totalAgreedAdvance - collectedAdvance;
+
+      if (remainingAgreedAdvanceDue > 0) {
+        upcoming.push({
+          planId: plan.id,
+          customerName: plan.customers.name,
+          rikshawDetails: `${plan.rikshaws.model_name} (${plan.rikshaws.registration_number})`,
+          type: 'advance',
+          amountDue: remainingAgreedAdvanceDue,
+          dueDate: format(today, 'yyyy-MM-dd'),
+          status: 'overdue',
+        });
+      }
+
+      // Generate monthly schedule and find upcoming ones
+      const saleDate = parseISO(plan.created_at);
+      const paymentsByInstallment: Record<number, number> = {};
+      paymentsForPlan
+        .filter(p => p.payment_type === 'monthly' && p.installment_number !== null)
+        .forEach(p => {
+          if (p.installment_number) {
+            paymentsByInstallment[p.installment_number] = (paymentsByInstallment[p.installment_number] || 0) + p.amount_paid;
+          }
+        });
+
+      for (let i = 1; i <= plan.duration_months; i++) {
+        const dueDate = addMonths(saleDate, i);
+        const paidAmount = paymentsByInstallment[i] || 0;
+        const expectedAmount = plan.monthly_installment;
+
+        if (paidAmount < expectedAmount) {
+          const amountRemainingForInstallment = expectedAmount - paidAmount;
+          let status: 'due' | 'overdue' = 'due';
+          if (isBefore(dueDate, today) && amountRemainingForInstallment > 0) {
+            status = 'overdue';
+          }
+
+          if (status === 'overdue' || isBefore(dueDate, sixMonthsFromNow) || format(dueDate, 'yyyy-MM-dd') === format(sixMonthsFromNow, 'yyyy-MM-dd')) {
+            upcoming.push({
+              planId: plan.id,
+              customerName: plan.customers.name,
+              rikshawDetails: `${plan.rikshaws.model_name} (${plan.rikshaws.registration_number})`,
+              type: 'monthly',
+              installmentNumber: i,
+              amountDue: amountRemainingForInstallment,
+              dueDate: format(dueDate, 'yyyy-MM-dd'),
+              status: status,
+            });
+          }
+        }
+      }
+    });
+
+    upcoming.sort((a, b) => parseISO(a.dueDate).getTime() - parseISO(b.dueDate).getTime());
+
+    return upcoming;
+  }, [installmentPlans, allInstallmentPayments, loadingPlans, loadingAllPayments]);
+
 
   return (
-    <div className="space-y-8">
-      <DashboardHeader />
+    <div className="space-y-8 max-w-7xl mx-auto p-4">
+      <div className="text-center mb-6">
+        <h1 className="text-4xl font-extrabold text-gray-900">Business Overview Dashboard</h1>
+        <p className="text-lg text-muted-foreground mt-2">
+          Gain insights into sales, payments, and inventory at a glance.
+        </p>
+      </div>
 
-      {/* 🟩 Key Metrics */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+      {/* Key Metrics Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Rikshaws</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Rickshaws</CardTitle>
             <Car className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalRikshaws}</div>
+            <div className="text-2xl font-bold">
+              {loadingTotalRickshaws ? 'Loading...' : totalRickshaws.toLocaleString()}
+            </div>
             <p className="text-xs text-muted-foreground">
-              <Badge variant="success">{stats.availableRikshaws} available</Badge>{' '}
-              <Badge variant="secondary">{stats.soldRikshaws} sold</Badge>
+              Overall vehicle inventory.
             </p>
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Sold This Month</CardTitle>
+            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {loadingSoldThisMonth ? 'Loading...' : soldThisMonth.toLocaleString()}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              New plans created in {format(new Date(), 'MMMM yyyy')}.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Customers</CardTitle>
             <Users className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalCustomers}</div>
+            <div className="text-2xl font-bold">
+              {loadingTotalCustomers ? 'Loading...' : totalCustomers.toLocaleString()}
+            </div>
             <p className="text-xs text-muted-foreground">
-              <Badge variant="outline">{stats.installmentPlans.length} active plans</Badge>
+              All registered customers.
             </p>
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Revenue</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              PKR {stats.totalRevenue.toLocaleString()}
+              {loadingPlans ? 'Loading...' : `Rs ${totalRevenue.toLocaleString()}`}
             </div>
             <p className="text-xs text-muted-foreground">
-              <Badge variant="success">PKR {stats.advancePayments.toLocaleString()} advance</Badge>{' '}
-              <Badge variant="secondary">PKR {stats.paidAmount.toLocaleString()} installments</Badge>
+              Cumulative value of all sales plans.
             </p>
           </CardContent>
         </Card>
 
-        <Card>
+        {/* New Metrics */}
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Upcoming Installments</CardTitle>
+            <CardTitle className="text-sm font-medium">Investment This Month</CardTitle>
+            <ShoppingCart className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {loadingCurrentMonthPurchases ? 'Loading...' : `Rs ${currentMonthInvestment.toLocaleString()}`}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Total purchase cost of rickshaws acquired in {format(new Date(), 'MMMM yyyy')}.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Profit This Month</CardTitle>
+            <DollarSign className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {loadingPlans ? 'Loading...' : `Rs ${currentMonthProfit.toLocaleString()}`}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Net profit from sales in {format(new Date(), 'MMMM yyyy')}.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Payments Received</CardTitle>
+            <CheckCircle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {loadingAllPayments || loadingPlans ? 'Loading...' : `Rs ${totalPaymentsReceived.toLocaleString()}`}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Total amount collected to date.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Remaining Balance</CardTitle>
+            <DollarSign className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {loadingAllPayments || loadingPlans ? 'Loading...' : `Rs ${totalRemainingBalance.toLocaleString()}`}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Total outstanding balance across all plans.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Overdue Installments</CardTitle>
             <AlertCircle className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.upcomingInstallments.length}</div>
-            <p className="text-xs text-muted-foreground">Due in next 7 days</p>
+            <div className="text-2xl font-bold text-red-600">
+              {loadingPlans || loadingAllPayments ? 'Loading...' : overdueInstallmentsCount.toLocaleString()}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Active plans with missed payments.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Advance Pending</CardTitle>
+            <Clock className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-orange-600">
+              {loadingPlans || loadingAllPayments ? 'Loading...' : advancePendingCount.toLocaleString()}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Plans with uncollected initial advance.
+            </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* 🟨 Charts Section */}
-      <Tabs defaultValue="sales" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="sales">Sales Overview</TabsTrigger>
-          <TabsTrigger value="inventory">Inventory Status</TabsTrigger>
-          <TabsTrigger value="revenue">Revenue Trend</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="sales">
-          <Card>
-            <CardHeader>
-              <CardTitle>Monthly Sales</CardTitle>
-              <CardDescription>Number of rikshaws sold per month</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={stats.salesData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip 
-                    formatter={(value) => [Number(value).toLocaleString(), 'Value']}
-                    labelFormatter={(label) => `Month: ${label}`}
-                  />
-                  <Bar dataKey="sales" fill="#3b82f6" name="Rikshaws Sold" />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="inventory">
-          <Card>
-            <CardHeader>
-              <CardTitle>Inventory Status</CardTitle>
-              <CardDescription>Current status of rikshaws in inventory</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <ResponsiveContainer width="100%" height={250}>
-                    <PieChart>
-                      <Pie
-                        data={stats.statusData}
-                        cx="50%"
-                        cy="50%"
-                        labelLine={false}
-                        label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                        outerRadius={80}
-                        dataKey="value"
-                      >
-                        {stats.statusData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value) => Number(value).toLocaleString()} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="space-y-4">
-                  <div className="flex items-center">
-                    <div className="h-3 w-3 rounded-full bg-[#10b981] mr-2"></div>
-                    <span>Available: {stats.availableRikshaws}</span>
-                  </div>
-                  <div className="flex items-center">
-                    <div className="h-3 w-3 rounded-full bg-[#3b82f6] mr-2"></div>
-                    <span>Sold: {stats.soldRikshaws}</span>
-                  </div>
-                  <div className="pt-4">
-                    <h4 className="font-medium mb-2">Inventory Value</h4>
-                    <p className="text-sm text-muted-foreground">
-                      Estimated: PKR {(stats.availableRikshaws * 250000).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="revenue">
-          <Card>
-            <CardHeader>
-              <CardTitle>Revenue Trend</CardTitle>
-              <CardDescription>Monthly revenue from sales</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={stats.salesData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip 
-                    formatter={(value) => [`PKR ${Number(value).toLocaleString()}`, 'Revenue']}
-                    labelFormatter={(label) => `Month: ${label}`}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="revenue" 
-                    stroke="#10b981" 
-                    strokeWidth={2} 
-                    name="Revenue"
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-
-      {/* 🟥 Upcoming Installments */}
-      <Card>
+      {/* Upcoming Installments Table */}
+      <Card className="border rounded-lg shadow-sm">
         <CardHeader>
-          <CardTitle>Upcoming Installments</CardTitle>
-          <CardDescription>Installments due in the next 7 days</CardDescription>
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Upcoming Installments (Next 6 Months)
+          </CardTitle>
+          <CardDescription>
+            Payments due in the near future, including monthly installments and pending advance amounts.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          {stats.upcomingInstallments.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <CreditCard className="h-12 w-12 mx-auto mb-4" />
-              <p>No upcoming installments in the next 7 days</p>
-            </div>
+          {loadingPlans || loadingAllPayments ? (
+            <div className="text-center py-8 text-muted-foreground">Loading upcoming installments...</div>
+          ) : upcomingInstallments.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">No upcoming installments in the next 6 months.</div>
           ) : (
-            <div className="space-y-4">
-              {stats.upcomingInstallments.map((installment: any) => {
-                const dueDate = new Date(installment.due_date);
-                const today = new Date();
-                const daysUntilDue = Math.ceil(
-                  (dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
-                );
-                
-                return (
-                  <div
-                    key={installment.id}
-                    className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors"
-                  >
-                    <div>
-                      <p className="font-medium">Installment #{installment.installment_number}</p>
-                      <p className="text-sm text-muted-foreground">
-                        Customer: {installment.installment_plans?.customers?.name || 'Unknown'}
-                      </p>
-                      <p className={`text-sm ${
-                        daysUntilDue <= 1 ? 'text-red-500 font-medium' : 
-                        daysUntilDue <= 3 ? 'text-amber-500' : 'text-muted-foreground'
-                      }`}>
-                        Due: {dueDate.toLocaleDateString()} 
-                        {daysUntilDue >= 0 && (
-                          <span> (in {daysUntilDue} day{daysUntilDue !== 1 ? 's' : ''})</span>
-                        )}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-medium">PKR {Number(installment.amount).toLocaleString()}</p>
-                      <Badge variant="warning">Upcoming</Badge>
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="overflow-x-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Customer Name</TableHead>
+                    <TableHead>Rickshaw</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Installment #</TableHead>
+                    <TableHead>Amount Due</TableHead>
+                    <TableHead>Due Date</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {upcomingInstallments.map((item, index) => (
+                    <TableRow key={`${item.planId}-${item.type}-${item.installmentNumber || 'advance'}-${index}`}>
+                      <TableCell className="font-medium">{item.customerName}</TableCell>
+                      <TableCell>{item.rikshawDetails}</TableCell>
+                      <TableCell>{item.type === 'monthly' ? 'Monthly' : 'Advance Due'}</TableCell>
+                      <TableCell>{item.installmentNumber || '-'}</TableCell>
+                      <TableCell>Rs {item.amountDue.toLocaleString()}</TableCell>
+                      <TableCell className={cn(
+                        isBefore(parseISO(item.dueDate), new Date()) && item.status === 'overdue' ? 'text-red-600 font-semibold' : ''
+                      )}>
+                        {new Date(item.dueDate).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>
+                        <span className={cn(
+                          "px-2 py-1 rounded-full text-xs font-medium",
+                          item.status === 'overdue' && "bg-red-100 text-red-800",
+                          item.status === 'due' && "bg-blue-100 text-blue-800",
+                        )}>
+                          {item.status === 'overdue' ? 'Overdue' : 'Due'}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
           )}
         </CardContent>

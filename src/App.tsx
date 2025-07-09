@@ -15,6 +15,7 @@ import Customers from "./pages/Customers";
 import Installments from "./pages/Installments";
 import SellRickshaw from "./pages/SellRickshaw"; // Add the new component
 import NotFound from "./pages/NotFound";
+import ReportPage from "./pages/ReportPage";
 
 const queryClient = new QueryClient();
 
@@ -32,7 +33,7 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<div>Dashboard Page - Coming Soon</div>} />
+              <Route index element={<Dashboard/>} />
             </Route>
             <Route path="/rikshaws" element={
               <ProtectedRoute>
@@ -68,7 +69,7 @@ const App = () => (
                 <AdminLayout />
               </ProtectedRoute>
             }>
-              <Route index element={<div>Reports Page - Coming Soon</div>} />
+              <Route index element={<ReportPage/>} />
             </Route>
             <Route path="/settings" element={
               <ProtectedRoute>

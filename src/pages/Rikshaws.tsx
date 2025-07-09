@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'; // Changed to useInfiniteQuery
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from '@/hooks/use-toast';
 import { Car, Plus, Search, Edit, Trash2, Eye, XCircle, Loader2 } from 'lucide-react';
+import { format } from 'date-fns';
+import { debounce } from 'lodash'; // Added debounce import
 
 // Define the exact type as per the new Supabase table schema
 interface Rikshaw {
@@ -24,6 +26,9 @@ interface Rikshaw {
   availability: 'sold' | 'unsold';
   created_at: string;
   updated_at: string;
+  purchase_date: string; // ISO string 'YYYY-MM-DD'
+  purchase_price: number;
+  sale_price: number | null; // Can be null if not sold yet
 }
 
 // Define the form data structure for adding/editing
@@ -36,10 +41,13 @@ interface RikshawFormData {
   registration_number: string;
   category: string;
   availability: string;
+  purchase_date: string;
+  purchase_price: number;
+  sale_price: number | null;
 }
 
 // -------------------------------------------------------------------------
-// RikshawForm Component (Moved outside for focus issue fix)
+// RikshawForm Component
 // -------------------------------------------------------------------------
 interface RikshawFormProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -201,6 +209,49 @@ const RikshawForm = ({ onSubmit, isLoading, onCancel, formData, setFormData, edi
             </div>
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="purchase_date">Purchase Date *</Label>
+              <Input
+                id="purchase_date"
+                type="date"
+                value={formData.purchase_date}
+                onChange={(e) => setFormData({ ...formData, purchase_date: e.target.value })}
+                required
+                className={validationErrors.purchase_date ? "border-destructive" : ""}
+              />
+              {validationErrors.purchase_date && <p className="text-destructive text-sm mt-1">{validationErrors.purchase_date}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="purchase_price">Purchase Price (Rs) *</Label>
+              <Input
+                id="purchase_price"
+                type="number"
+                value={formData.purchase_price || ''}
+                onChange={(e) => setFormData({ ...formData, purchase_price: parseFloat(e.target.value) || 0 })}
+                placeholder="e.g., 150000"
+                required
+                className={validationErrors.purchase_price ? "border-destructive" : ""}
+              />
+              {validationErrors.purchase_price && <p className="text-destructive text-sm mt-1">{validationErrors.purchase_price}</p>}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="sale_price">Sale Price (Rs)</Label>
+            <Input
+              id="sale_price"
+              type="number"
+              value={formData.sale_price || ''}
+              onChange={(e) => setFormData({ ...formData, sale_price: parseFloat(e.target.value) || null })}
+              placeholder="e.g., 180000"
+              disabled={formData.availability === 'unsold'} // Disable if not sold
+              className={validationErrors.sale_price ? "border-destructive" : ""}
+            />
+            {formData.availability === 'unsold' && <p className="text-muted-foreground text-sm mt-1">Sale Price is applicable when availability is 'sold'.</p>}
+            {validationErrors.sale_price && <p className="text-destructive text-sm mt-1">{validationErrors.sale_price}</p>}
+          </div>
+
           <div className="flex gap-2 justify-end mt-6">
             <Button type="button" variant="outline" onClick={onCancel}>
               Cancel
@@ -224,7 +275,7 @@ const RikshawForm = ({ onSubmit, isLoading, onCancel, formData, setFormData, edi
 };
 
 // -------------------------------------------------------------------------
-// RikshawDetailsDisplay Component (Moved outside)
+// RikshawDetailsDisplay Component
 // -------------------------------------------------------------------------
 interface RikshawDetailsDisplayProps {
   rikshaw: Rikshaw;
@@ -277,6 +328,18 @@ const RikshawDetailsDisplay = ({ rikshaw, onClose }: RikshawDetailsDisplayProps)
             {rikshaw.availability}
           </Badge>
         </div>
+        <div className="space-y-1">
+          <p className="font-semibold">Purchase Date:</p>
+          <p>{new Date(rikshaw.purchase_date).toLocaleDateString()}</p>
+        </div>
+        <div className="space-y-1">
+          <p className="font-semibold">Purchase Price:</p>
+          <p>Rs {rikshaw.purchase_price?.toLocaleString()}</p>
+        </div>
+        <div className="space-y-1">
+          <p className="font-semibold">Sale Price:</p>
+          <p>{rikshaw.sale_price ? `Rs ${rikshaw.sale_price.toLocaleString()}` : 'N/A (Unsold)'}</p>
+        </div>
         <div className="space-y-1 col-span-2">
           <p className="font-semibold">Date of Addition to Inventory</p>
           <p>{new Date(rikshaw.created_at).toLocaleDateString()} at {new Date(rikshaw.created_at).toLocaleTimeString()}</p>
@@ -294,7 +357,7 @@ const Rikshaws = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [availabilityFilter, setAvailabilityFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [typeFilter, setTypeFilter] = useState<string>('all'); // State for type filter
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [editingRikshaw, setEditingRikshaw] = useState<Rikshaw | null>(null);
   const [selectedRikshaw, setSelectedRikshaw] = useState<Rikshaw | null>(null);
@@ -308,14 +371,41 @@ const Rikshaws = () => {
     chassis_number: '',
     registration_number: '',
     category: 'new',
-    availability: 'unsold'
+    availability: 'unsold',
+    purchase_date: format(new Date(), 'yyyy-MM-dd'),
+    purchase_price: 0,
+    sale_price: null
   });
 
   const queryClient = useQueryClient();
 
-  const types = ['Loader 100 CC', 'Loader 150 CC', 'Rikshaw 200 CC Family', 'Rikshaw 200 CC Open 6-seater']; // Available types for filter
+  const types = ['Loader 100 CC', 'Loader 150 CC', 'Rikshaw 200 CC Family', 'Rikshaw 200 CC Open 6-seater'];
 
-  // Optimized fetch function for useInfiniteQuery
+  // Debounce the search term update
+  const debouncedSetSearchTerm = useCallback(
+    debounce((value) => {
+      // This will trigger a refetch of the infinite query with the new search term
+      // and automatically reset the pageParam to 0.
+      queryClient.setQueryData(
+        ['rikshaws', value, availabilityFilter, categoryFilter, typeFilter, ITEMS_PER_PAGE],
+        (oldData: any) => {
+          if (!oldData) return undefined;
+          // When search term changes, clear existing data to show loading state for new search
+          return { pages: [], pageParams: [0], data: [], count: 0 };
+        }
+      );
+      setSearchTerm(value); // Keep this to update the input field
+    }, 300),
+    [availabilityFilter, categoryFilter, typeFilter, ITEMS_PER_PAGE, queryClient]
+  );
+
+  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Update the local state for the input field immediately
+    setSearchTerm(e.target.value);
+    // Call the debounced function to update the query key, which triggers refetching
+    debouncedSetSearchTerm(e.target.value);
+  };
+
   const fetchRikshaws = useCallback(async ({ queryKey, pageParam = 0 }: { queryKey: any[]; pageParam?: number }) => {
     const [_key, currentSearchTerm, currentAvailabilityFilter, currentCategoryFilter, currentTypeFilter, limit] = queryKey;
     const offset = pageParam * limit;
@@ -353,7 +443,7 @@ const Rikshaws = () => {
     isFetchingNextPage,
     fetchNextPage,
     hasNextPage,
-    refetch // Added refetch
+    refetch
   } = useInfiniteQuery({
     queryKey: ['rikshaws', searchTerm, availabilityFilter, categoryFilter, typeFilter, ITEMS_PER_PAGE],
     queryFn: fetchRikshaws,
@@ -367,9 +457,7 @@ const Rikshaws = () => {
     },
     select: (data) => ({
       pages: data.pages,
-      // Flatten pages into a single array of rikshaws
       data: data.pages.flatMap(page => page.data),
-      // Keep the total count from the first page or last page if available
       count: data.pages[0]?.count || 0,
       pageParams: data.pageParams
     }),
@@ -379,10 +467,7 @@ const Rikshaws = () => {
   const allRikshaws = data?.data || [];
   const totalRikshawsCount = data?.count || 0;
 
-  // No need for a manual useEffect to reset page for filters with useInfiniteQuery,
-  // as changing the queryKey automatically causes a refetch from initialPageParam.
-
-  const validateForm = async (data: RikshawFormData, isEditMode: boolean = false) => {
+  const validateForm = useCallback(async (data: RikshawFormData, isEditMode: boolean = false) => {
     const errors: { [key: string]: string } = {};
 
     if (!data.manufacturer) errors.manufacturer = 'Manufacturer is required.';
@@ -392,6 +477,13 @@ const Rikshaws = () => {
     if (!data.chassis_number) errors.chassis_number = 'Chassis Number is required.';
     if (!data.category) errors.category = 'Category is required.';
     if (!data.availability) errors.availability = 'Availability is required.';
+    if (!data.purchase_date) errors.purchase_date = 'Purchase Date is required.';
+    if (!data.purchase_price || data.purchase_price <= 0) errors.purchase_price = 'Purchase Price must be greater than 0.';
+
+    if (data.availability === 'sold' && (!data.sale_price || data.sale_price <= 0)) {
+        errors.sale_price = 'Sale Price is required and must be greater than 0 when availability is "sold".';
+    }
+
 
     // Unique checks for Engine Number and Chassis Number
     if (data.engine_number) {
@@ -438,7 +530,7 @@ const Rikshaws = () => {
 
     setValidationErrors(errors);
     return Object.keys(errors).length === 0;
-  };
+  }, [editingRikshaw]); // Dependency on editingRikshaw to correctly handle uniqueness check in edit mode
 
   const addRikshawMutation = useMutation({
     mutationFn: async (newRikshaw: RikshawFormData) => {
@@ -452,7 +544,10 @@ const Rikshaws = () => {
           chassis_number: newRikshaw.chassis_number,
           registration_number: newRikshaw.registration_number || null,
           category: newRikshaw.category as Rikshaw['category'],
-          availability: newRikshaw.availability as Rikshaw['availability']
+          availability: newRikshaw.availability as Rikshaw['availability'],
+          purchase_date: newRikshaw.purchase_date,
+          purchase_price: newRikshaw.purchase_price,
+          sale_price: newRikshaw.availability === 'sold' ? newRikshaw.sale_price : null
         }])
         .select()
         .single();
@@ -461,7 +556,7 @@ const Rikshaws = () => {
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch all filtered data
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] });
       setIsFormVisible(false);
       setSelectedRikshaw(null);
       resetForm();
@@ -492,7 +587,10 @@ const Rikshaws = () => {
           chassis_number: updates.chassis_number,
           registration_number: updates.registration_number || null,
           category: updates.category as Rikshaw['category'],
-          availability: updates.availability as Rikshaw['availability']
+          availability: updates.availability as Rikshaw['availability'],
+          purchase_date: updates.purchase_date,
+          purchase_price: updates.purchase_price,
+          sale_price: updates.availability === 'sold' ? updates.sale_price : null
         })
         .eq('id', id)
         .select()
@@ -502,7 +600,7 @@ const Rikshaws = () => {
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch all filtered data
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] });
       setIsFormVisible(false);
       setEditingRikshaw(null);
       setSelectedRikshaw(null);
@@ -532,7 +630,7 @@ const Rikshaws = () => {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['rikshaws'] }); // Invalidate to refetch all filtered data
+      queryClient.invalidateQueries({ queryKey: ['rikshaws'] });
       setSelectedRikshaw(null);
       toast({
         title: "Success",
@@ -549,7 +647,7 @@ const Rikshaws = () => {
     }
   });
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setFormData({
       manufacturer: '',
       model_name: '',
@@ -558,23 +656,26 @@ const Rikshaws = () => {
       chassis_number: '',
       registration_number: '',
       category: 'new',
-      availability: 'unsold'
+      availability: 'unsold',
+      purchase_date: format(new Date(), 'yyyy-MM-dd'),
+      purchase_price: 0,
+      sale_price: null
     });
     setValidationErrors({});
-  };
+  }, []);
 
-  const handleAddClick = () => {
+  const handleAddClick = useCallback(() => {
     resetForm();
     setEditingRikshaw(null);
     setSelectedRikshaw(null);
     setIsFormVisible(true);
-  };
+  }, [resetForm]);
 
-  const handleFormCancel = () => {
+  const handleFormCancel = useCallback(() => {
     setIsFormVisible(false);
     setEditingRikshaw(null);
     resetForm();
-  };
+  }, [resetForm]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -598,8 +699,8 @@ const Rikshaws = () => {
     }
   };
 
-  const handleEdit = (rikshaw: Rikshaw) => {
-    setSelectedRikshaw(rikshaw);
+  const handleEdit = useCallback((rikshaw: Rikshaw) => {
+    setSelectedRikshaw(null); // Close details view if open
     setEditingRikshaw(rikshaw);
     setFormData({
       manufacturer: rikshaw.manufacturer,
@@ -610,27 +711,30 @@ const Rikshaws = () => {
       registration_number: rikshaw.registration_number || '',
       category: rikshaw.category,
       availability: rikshaw.availability,
+      purchase_date: rikshaw.purchase_date,
+      purchase_price: rikshaw.purchase_price,
+      sale_price: rikshaw.sale_price || null,
     });
     setIsFormVisible(true);
     setValidationErrors({});
-  };
+  }, []);
 
-  const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this rikshaw?')) {
+  const handleDelete = useCallback((id: string) => {
+    if (window.confirm('Are you sure you want to delete this rikshaw? This action cannot be undone.')) {
       deleteRikshawMutation.mutate(id);
     }
-  };
+  }, [deleteRikshawMutation]);
 
-  const handleViewDetails = (rikshaw: Rikshaw) => {
+  const handleViewDetails = useCallback((rikshaw: Rikshaw) => {
     setIsFormVisible(false);
     setEditingRikshaw(null);
     setSelectedRikshaw(rikshaw);
     setValidationErrors({});
-  };
+  }, []);
 
-  const handleCloseDetails = () => {
+  const handleCloseDetails = useCallback(() => {
     setSelectedRikshaw(null);
-  };
+  }, []);
 
   const getAvailabilityBadgeVariant = (availability: string) => {
     switch (availability) {
@@ -655,7 +759,6 @@ const Rikshaws = () => {
   };
 
   // Condition to show initial loading state
-  // Check if it's the very first load and no data has been fetched yet
   if (isLoading && !allRikshaws.length) {
     return (
       <div className="flex items-center justify-center min-h-96">
@@ -671,7 +774,7 @@ const Rikshaws = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Rikshaws</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Rikshaws Management</h1>
           <p className="text-muted-foreground">Manage your rikshaw inventory</p>
         </div>
 
@@ -717,7 +820,7 @@ const Rikshaws = () => {
                 <Input
                   placeholder="Search by manufacturer, model, engine, chassis, reg. no., or type..."
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={handleSearchInputChange} // Changed to debounced handler
                   className="pl-10"
                 />
               </div>
@@ -742,7 +845,6 @@ const Rikshaws = () => {
                 <SelectItem value="sold">Sold</SelectItem>
               </SelectContent>
             </Select>
-            {/* New Type Filter */}
             <Select value={typeFilter} onValueChange={setTypeFilter}>
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="Filter by Type" />
@@ -763,6 +865,7 @@ const Rikshaws = () => {
                   <TableHead>Manufacturer</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Engine Number</TableHead>
+                  <TableHead>Purchase Price</TableHead>
                   <TableHead>Availability</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -770,7 +873,7 @@ const Rikshaws = () => {
               <TableBody>
                 {allRikshaws.length === 0 && !isFetching && !isFetchingNextPage ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-12">
+                    <TableCell colSpan={6} className="text-center py-12">
                       <Car className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
                       <p className="text-muted-foreground mb-2">No rikshaws found</p>
                       <p className="text-sm text-muted-foreground">
@@ -787,6 +890,7 @@ const Rikshaws = () => {
                       <TableCell className="font-medium">{rikshaw.manufacturer}</TableCell>
                       <TableCell>{rikshaw.type}</TableCell>
                       <TableCell className="font-mono text-sm">{rikshaw.engine_number}</TableCell>
+                      <TableCell>Rs {rikshaw.purchase_price?.toLocaleString()}</TableCell>
                       <TableCell>
                         <Badge variant={getAvailabilityBadgeVariant(rikshaw.availability)}>
                           {rikshaw.availability}
@@ -821,9 +925,9 @@ const Rikshaws = () => {
                     </TableRow>
                   ))
                 )}
-                {isFetchingNextPage && allRikshaws.length > 0 && ( // Show loader when fetching more, if items already exist
+                {isFetchingNextPage && allRikshaws.length > 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} className="text-center py-4">
+                      <TableCell colSpan={6} className="text-center py-4">
                         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
                         <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
                       </TableCell>
