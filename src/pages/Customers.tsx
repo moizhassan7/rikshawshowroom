@@ -45,7 +45,7 @@ interface CustomerFormData {
 
 // Helper function to remove hyphens from phone numbers and ensure it's a string
 const cleanPhoneNumber = (number: string | null | undefined): string => {
-  return number ? number.replace(/-/g, '') : '';
+  return number ? number.replace(/[-\s()]/g, '') : ''; // Also remove spaces and parentheses
 };
 
 // Error Boundary Component (kept as provided, good practice)
@@ -66,7 +66,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   render() {
     if (this.state.hasError) {
       return (
-        <div className="p-6 bg-red-50 border border-red-200 rounded-lg">
+        <div className="p-6 bg-red-50 border border-red-200 rounded-lg" role="alert">
           <h2 className="text-xl font-bold text-red-800">Something went wrong</h2>
           <p className="mt-2 text-red-700">{this.state.error?.message || 'An unexpected error occurred'}</p>
           <Button
@@ -117,7 +117,7 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
           {formErrors.guarantor && (
-            <div className="p-3 bg-red-50 text-red-700 rounded-md">
+            <div className="p-3 bg-red-50 text-red-700 rounded-md" role="alert">
               {formErrors.guarantor}
             </div>
           )}
@@ -131,8 +131,10 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
                 value={formData.name || ''}
                 onChange={(e) => handleInputChange('name', e.target.value)}
                 required
+                aria-invalid={!!formErrors.name}
+                aria-describedby={formErrors.name ? "name-error" : undefined}
               />
-              {formErrors.name && <p className="text-red-500 text-sm">{formErrors.name}</p>}
+              {formErrors.name && <p id="name-error" className="text-red-500 text-sm">{formErrors.name}</p>}
             </div>
             <div className="space-y-2">
               <Label htmlFor="cnic">CNIC *</Label>
@@ -142,8 +144,10 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
                 onChange={(e) => handleInputChange('cnic', e.target.value)}
                 placeholder="12345-1234567-1"
                 required
+                aria-invalid={!!formErrors.cnic}
+                aria-describedby={formErrors.cnic ? "cnic-error" : undefined}
               />
-              {formErrors.cnic && <p className="text-red-500 text-sm">{formErrors.cnic}</p>}
+              {formErrors.cnic && <p id="cnic-error" className="text-red-500 text-sm">{formErrors.cnic}</p>}
             </div>
           </div>
           <div className="space-y-2">
@@ -154,8 +158,10 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               onChange={(e) => handleInputChange('phone', cleanPhoneNumber(e.target.value))} // Clean here
               placeholder="e.g., 03001234567"
               required
+              aria-invalid={!!formErrors.phone}
+              aria-describedby={formErrors.phone ? "phone-error" : undefined}
             />
-            {formErrors.phone && <p className="text-red-500 text-sm">{formErrors.phone}</p>}
+            {formErrors.phone && <p id="phone-error" className="text-red-500 text-sm">{formErrors.phone}</p>}
           </div>
 
           <div className="space-y-2">
@@ -166,8 +172,10 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
               onChange={(e) => handleInputChange('address', e.target.value)}
               rows={3}
               required
+              aria-invalid={!!formErrors.address}
+              aria-describedby={formErrors.address ? "address-error" : undefined}
             />
-            {formErrors.address && <p className="text-red-500 text-sm">{formErrors.address}</p>}
+            {formErrors.address && <p id="address-error" className="text-red-500 text-sm">{formErrors.address}</p>}
           </div>
 
           <h3 className="text-lg font-semibold border-b pb-2 mt-6">Guarantor Details</h3>
@@ -187,8 +195,10 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
                 value={formData.guarantor_cnic || ''}
                 onChange={(e) => handleInputChange('guarantor_cnic', e.target.value)}
                 placeholder="12345-1234567-1"
+                aria-invalid={!!formErrors.guarantor_cnic}
+                aria-describedby={formErrors.guarantor_cnic ? "guarantor-cnic-error" : undefined}
               />
-              {formErrors.guarantor_cnic && <p className="text-red-500 text-sm">{formErrors.guarantor_cnic}</p>}
+              {formErrors.guarantor_cnic && <p id="guarantor-cnic-error" className="text-red-500 text-sm">{formErrors.guarantor_cnic}</p>}
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -199,8 +209,10 @@ const CustomerForm: React.FC<CustomerFormProps> = React.memo(({
                 value={formData.guarantor_phone || ''}
                 onChange={(e) => handleInputChange('guarantor_phone', cleanPhoneNumber(e.target.value))} // Clean here
                 placeholder="e.g., 03001234567"
+                aria-invalid={!!formErrors.guarantor_phone}
+                aria-describedby={formErrors.guarantor_phone ? "guarantor-phone-error" : undefined}
               />
-              {formErrors.guarantor_phone && <p className="text-red-500 text-sm">{formErrors.guarantor_phone}</p>}
+              {formErrors.guarantor_phone && <p id="guarantor-phone-error" className="text-red-500 text-sm">{formErrors.guarantor_phone}</p>}
             </div>
             <div className="space-y-2">
               <Label htmlFor="guarantor_address">Guarantor Address</Label>
@@ -283,7 +295,7 @@ const CustomerDetailsDisplay: React.FC<CustomerDetailsDisplayProps> = React.memo
         </div>
         <div className="space-y-1">
           <p className="font-semibold">Phone Number:</p>
-          <p>{customer.phone}</p> {/* Display without hyphens */}
+          <p>{customer.phone}</p>
         </div>
         <div className="space-y-1">
           <p className="font-semibold">Assigned Rickshaw:</p>
@@ -307,7 +319,7 @@ const CustomerDetailsDisplay: React.FC<CustomerDetailsDisplayProps> = React.memo
         </div>
         <div className="space-y-1">
           <p className="font-semibold">Guarantor Phone:</p>
-          <p>{customer.guarantor_phone || 'N/A'}</p> {/* Display without hyphens */}
+          <p>{customer.guarantor_phone || 'N/A'}</p>
         </div>
         <div className="space-y-1 col-span-2">
           <p className="font-semibold">Guarantor Address:</p>
@@ -328,7 +340,6 @@ const CustomerDetailsDisplay: React.FC<CustomerDetailsDisplayProps> = React.memo
 
         <div className="space-y-1 col-span-2">
           <p className="font-semibold">Agreement Date:</p>
-          {/* Display agreement_date from installment_plans */}
           <p>{customer.agreement_date ? new Date(customer.agreement_date).toLocaleDateString() : 'N/A'}</p>
         </div>
       </div>
@@ -341,9 +352,9 @@ const Customers = () => {
   const ITEMS_PER_PAGE = 15;
   const [searchTerm, setSearchTerm] = useState('');
   const [page, setPage] = useState(0);
-  const [isFormVisible, setIsFormVisible] = useState(false);
-  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  // States to control which panel is visible: null (list), 'form' (add/edit), or Customer object (details)
+  const [showCustomerPanel, setShowCustomerPanel] = useState<'form' | Customer | null>(null);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null); // Kept for `CustomerForm` prop clarity
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
   const [formData, setFormData] = useState<CustomerFormData>({
@@ -367,7 +378,6 @@ const Customers = () => {
     const [_key, currentSearchTerm, currentPage, limit] = queryKey;
     const offset = currentPage * limit;
 
-    // Fetch customers along with their related installment plans
     let query = supabase
       .from('customers')
       .select('*, installment_plans(agreement_date, created_at)', { count: 'exact' });
@@ -421,6 +431,23 @@ const Customers = () => {
     setPage(0);
   }, [searchTerm]);
 
+  // Resets the form data and errors
+  const resetForm = useCallback(() => {
+    setFormData({
+      name: '',
+      cnic: '',
+      phone: '',
+      address: '',
+      guarantor_name: '',
+      guarantor_cnic: '',
+      guarantor_phone: '',
+      guarantor_address: '',
+      bank_name: '',
+      cheque_number: ''
+    });
+    setFormErrors({});
+  }, []);
+
   // Validation logic
   const validateForm = useCallback(async (): Promise<boolean> => {
     const errors: Record<string, string> = {};
@@ -439,11 +466,10 @@ const Customers = () => {
         .from('customers')
         .select('id')
         .eq('cnic', formData.cnic)
-        .maybeSingle(); // Use maybeSingle for better handling of no results or multiple
+        .maybeSingle();
 
       if (cnicError) console.error('Error checking CNIC uniqueness:', cnicError);
 
-      // If an existing customer with this CNIC is found and it's not the current customer being edited
       if (existingCustomer && (editingCustomer ? existingCustomer.id !== editingCustomer.id : true)) {
         errors.cnic = 'This CNIC is already registered.';
       }
@@ -474,11 +500,10 @@ const Customers = () => {
       formData.guarantor_address
     ];
 
-    const hasAnyGuarantorFieldFilled = guarantorFields.some(field => !!field?.trim());
-    const areAllGuarantorFieldsFilled = guarantorFields.every(field => !field || field.trim()); // Changed to check if all non-empty are trimmed
-
-    if (hasAnyGuarantorFieldFilled && !areAllGuarantorFieldsFilled) {
-      errors.guarantor = 'All guarantor fields (Name, CNIC, Phone, Address) must be filled if any are provided.';
+    // Check if any guarantor field is filled, and if so, all must be filled
+    const filledGuarantorFields = guarantorFields.filter(field => !!field?.trim());
+    if (filledGuarantorFields.length > 0 && filledGuarantorFields.length < guarantorFields.length) {
+        errors.guarantor = 'If any guarantor field is provided, all guarantor fields (Name, CNIC, Phone, Address) must be filled.';
     }
 
     // Validate guarantor CNIC format if provided
@@ -498,10 +523,8 @@ const Customers = () => {
 
   const addCustomerMutation = useMutation({
     mutationFn: async (customerData: CustomerFormData) => {
-      // Validation is now handled inside the mutation fn
       const isValid = await validateForm();
       if (!isValid) {
-        // Throw an error to trigger onError and display toast
         throw new Error('Please correct the highlighted fields.');
       }
 
@@ -516,8 +539,7 @@ const Customers = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      setIsFormVisible(false);
-      setSelectedCustomer(null);
+      setShowCustomerPanel(null); // Return to list view
       resetForm();
       toast({
         title: "Success",
@@ -552,9 +574,8 @@ const Customers = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      setIsFormVisible(false);
+      setShowCustomerPanel(null); // Return to list view
       setEditingCustomer(null);
-      setSelectedCustomer(null);
       resetForm();
       toast({
         title: "Success",
@@ -581,7 +602,10 @@ const Customers = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      setSelectedCustomer(null);
+      // If the deleted customer was the one being viewed, close the details panel
+      if (typeof showCustomerPanel !== 'string' && showCustomerPanel?.id === id) {
+        setShowCustomerPanel(null);
+      }
       toast({
         title: "Success",
         description: "Customer deleted successfully"
@@ -596,32 +620,14 @@ const Customers = () => {
     }
   });
 
-  // Resets the form data and errors
-  const resetForm = useCallback(() => {
-    setFormData({
-      name: '',
-      cnic: '',
-      phone: '',
-      address: '',
-      guarantor_name: '',
-      guarantor_cnic: '',
-      guarantor_phone: '',
-      guarantor_address: '',
-      bank_name: '',
-      cheque_number: ''
-    });
-    setFormErrors({});
-  }, []);
-
   const handleAddClick = useCallback(() => {
     resetForm();
-    setEditingCustomer(null);
-    setSelectedCustomer(null);
-    setIsFormVisible(true);
+    setEditingCustomer(null); // Clear editing state
+    setShowCustomerPanel('form'); // Show the form for adding
   }, [resetForm]);
 
   const handleFormCancel = useCallback(() => {
-    setIsFormVisible(false);
+    setShowCustomerPanel(null); // Return to list view
     setEditingCustomer(null);
     resetForm();
   }, [resetForm]);
@@ -629,35 +635,32 @@ const Customers = () => {
   // Form submission handler for adding customers
   const handleAddSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    // Validation is now run directly inside the mutation function
     addCustomerMutation.mutate(formData);
   }, [formData, addCustomerMutation]);
 
   // Handler for editing a customer
   const handleEdit = useCallback((customer: Customer) => {
-    setSelectedCustomer(null); // Ensure details view is closed
-    setEditingCustomer(customer);
+    setEditingCustomer(customer); // Set customer to be edited
     setFormData({
       name: customer.name,
       cnic: customer.cnic,
-      phone: customer.phone, // Phone number should already be without hyphens from DB
+      phone: customer.phone,
       address: customer.address,
       guarantor_name: customer.guarantor_name,
       guarantor_cnic: customer.guarantor_cnic,
-      guarantor_phone: customer.guarantor_phone, // Phone number should already be without hyphens from DB
+      guarantor_phone: customer.guarantor_phone,
       guarantor_address: customer.guarantor_address,
       bank_name: customer.bank_name,
       cheque_number: customer.cheque_number,
     });
-    setIsFormVisible(true);
     setFormErrors({}); // Clear any previous form errors
+    setShowCustomerPanel('form'); // Show the form for editing
   }, []);
 
   // Form submission handler for updating customers
   const handleUpdateSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingCustomer) {
-      // Validation is now run directly inside the mutation function
       updateCustomerMutation.mutate({ ...formData, id: editingCustomer.id });
     }
   }, [editingCustomer, formData, updateCustomerMutation]);
@@ -667,20 +670,18 @@ const Customers = () => {
     if (window.confirm('Are you sure you want to delete this customer? This action cannot be undone.')) {
       deleteCustomerMutation.mutate(id);
     }
-  }, [deleteCustomerMutation]);
+  }, [deleteCustomerMutation, showCustomerPanel]);
 
   // Handler for viewing customer details
   const handleViewDetails = useCallback((customer: Customer) => {
-    setIsFormVisible(false);
-    setEditingCustomer(null);
-    setSelectedCustomer(customer);
-    setFormErrors({});
-  }, []);
+    setShowCustomerPanel(customer); // Set the customer object to show details
+    setEditingCustomer(null); // Ensure editing state is clear
+    resetForm(); // Clear form data just in case
+  }, [resetForm]);
 
   // Handler for closing customer details view
   const handleCloseDetails = useCallback(() => {
-    setSelectedCustomer(null);
-    setIsFormVisible(false);
+    setShowCustomerPanel(null); // Return to list view
     setEditingCustomer(null);
     resetForm();
   }, [resetForm]);
@@ -690,8 +691,8 @@ const Customers = () => {
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <h1 className="text-3xl font-bold">Customer Management</h1>
-          {/* Show Add Customer button only when no form or details are visible */}
-          {!isFormVisible && !selectedCustomer && (
+          {/* Show Add Customer button only when the main list is visible */}
+          {showCustomerPanel === null && (
             <Button onClick={handleAddClick} aria-label="Add customer">
               <Plus className="h-4 w-4 mr-2" />
               Add Customer
@@ -699,154 +700,157 @@ const Customers = () => {
           )}
         </div>
 
-        {/* Conditionally render CustomerForm */}
-        {isFormVisible && (
-          <CustomerForm
-            formData={formData}
-            setFormData={setFormData}
-            formErrors={formErrors}
-            editingCustomer={editingCustomer}
-            onSubmit={editingCustomer ? handleUpdateSubmit : handleAddSubmit}
-            isLoading={addCustomerMutation.isPending || updateCustomerMutation.isPending}
-            onCancel={handleFormCancel}
-          />
-        )}
+        {/* Conditionally render CustomerForm or CustomerDetailsDisplay based on showCustomerPanel */}
+        <div aria-live="polite"> {/* Announce dynamic content changes */}
+          {showCustomerPanel === 'form' && (
+            <CustomerForm
+              formData={formData}
+              setFormData={setFormData}
+              formErrors={formErrors}
+              editingCustomer={editingCustomer}
+              onSubmit={editingCustomer ? handleUpdateSubmit : handleAddSubmit}
+              isLoading={addCustomerMutation.isPending || updateCustomerMutation.isPending}
+              onCancel={handleFormCancel}
+            />
+          )}
 
-        {/* Conditionally render CustomerDetailsDisplay */}
-        {!isFormVisible && selectedCustomer && (
-          <CustomerDetailsDisplay customer={selectedCustomer} onClose={handleCloseDetails} />
-        )}
+          {typeof showCustomerPanel !== 'string' && showCustomerPanel !== null && (
+            <CustomerDetailsDisplay customer={showCustomerPanel} onClose={handleCloseDetails} />
+          )}
+        </div>
         
-        {/* Main Customer List Card */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Customer List</CardTitle>
-            <div className="flex items-center space-x-2 mt-2">
-              <Search className="h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search customers by name, CNIC, or phone..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="max-w-sm"
-                aria-label="Search customers"
-              />
-            </div>
-            <p className="text-sm text-muted-foreground mt-2">
-              Showing {customers.length} of {totalCustomersCount} customers.
-            </p>
-          </CardHeader>
-          <CardContent>
-            {isLoading && !customers.length ? (
-              <div className="text-center py-8">
-                <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
-                <p className="mt-2 text-muted-foreground">Loading customers...</p>
+        {/* Main Customer List Card - always present unless a form or details is explicitly shown */}
+        {showCustomerPanel === null && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Customer List</CardTitle>
+              <div className="flex items-center space-x-2 mt-2">
+                <Search className="h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search customers by name, CNIC, or phone..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="max-w-sm"
+                  aria-label="Search customers"
+                />
               </div>
-            ) : isError ? (
-              <div className="text-center py-8 text-red-500">
-                Error loading customers: {error?.message}
-                <Button
-                  variant="outline"
-                  className="mt-2"
-                  onClick={() => queryClient.refetchQueries({ queryKey: ['customers'] })}
-                >
-                  Retry
-                </Button>
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>CNIC</TableHead>
-                    <TableHead>Phone</TableHead>
-                    <TableHead>Address</TableHead>
-                    <TableHead>Agreement Date</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {customers.length === 0 && !isFetching ? (
+              <p className="text-sm text-muted-foreground mt-2">
+                Showing {customers.length} of {totalCustomersCount} customers.
+              </p>
+            </CardHeader>
+            <CardContent>
+              {isLoading && !customers.length ? (
+                <div className="text-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
+                  <p className="mt-2 text-muted-foreground">Loading customers...</p>
+                </div>
+              ) : isError ? (
+                <div className="text-center py-8 text-red-500" role="alert">
+                  Error loading customers: {error?.message}
+                  <Button
+                    variant="outline"
+                    className="mt-2"
+                    onClick={() => queryClient.refetchQueries({ queryKey: ['customers'] })}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                        {searchTerm ? 'No customers found matching your search.' : 'No customers added yet.'}
-                      </TableCell>
+                      <TableHead>Name</TableHead>
+                      <TableHead>CNIC</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead>Address</TableHead>
+                      <TableHead>Agreement Date</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
-                  ) : (
-                    customers.map((customer) => (
-                      <TableRow key={customer.id}>
-                        <TableCell className="font-medium">{customer.name}</TableCell>
-                        <TableCell>{customer.cnic}</TableCell>
-                        <TableCell>{customer.phone}</TableCell>
-                        <TableCell className="max-w-xs truncate">{customer.address}</TableCell>
-                        <TableCell>{customer.agreement_date ? new Date(customer.agreement_date).toLocaleDateString() : 'N/A'}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleViewDetails(customer)}
-                              aria-label={`View details of ${customer.name}`}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleEdit(customer)}
-                              aria-label={`Edit ${customer.name}`}
-                            >
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleDelete(customer.id)}
-                              disabled={deleteCustomerMutation.isPending}
-                              aria-label={`Delete ${customer.name}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                  </TableHeader>
+                  <TableBody>
+                    {customers.length === 0 && !isFetching ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                          {searchTerm ? 'No customers found matching your search.' : 'No customers added yet.'}
                         </TableCell>
                       </TableRow>
-                    ))
-                  )}
-                  {isFetching && customers.length > 0 && (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center py-4">
-                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
-                        <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            )}
+                    ) : (
+                      customers.map((customer) => (
+                        <TableRow key={customer.id}>
+                          <TableCell className="font-medium">{customer.name}</TableCell>
+                          <TableCell>{customer.cnic}</TableCell>
+                          <TableCell>{customer.phone}</TableCell>
+                          <TableCell className="max-w-xs truncate">{customer.address}</TableCell>
+                          <TableCell>{customer.agreement_date ? new Date(customer.agreement_date).toLocaleDateString() : 'N/A'}</TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleViewDetails(customer)}
+                                aria-label={`View details of ${customer.name}`}
+                              >
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEdit(customer)}
+                                aria-label={`Edit ${customer.name}`}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleDelete(customer.id)}
+                                disabled={deleteCustomerMutation.isPending}
+                                aria-label={`Delete ${customer.name}`}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                    {isFetching && customers.length > 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-4">
+                          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground mx-auto" />
+                          <p className="text-muted-foreground text-sm mt-2">Loading more...</p>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              )}
 
-            {/* Pagination controls */}
-            {hasMore && (
-              <div className="text-center mt-6">
-                <Button onClick={() => setPage(prev => prev + 1)} disabled={isFetching}>
-                  {isFetching ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Loading More...
-                    </>
-                  ) : (
-                    'Show More'
-                  )}
-                </Button>
-              </div>
-            )}
+              {/* Pagination controls */}
+              {hasMore && showCustomerPanel === null && ( // Only show pagination when list is active
+                <div className="text-center mt-6">
+                  <Button onClick={() => setPage(prev => prev + 1)} disabled={isFetching}>
+                    {isFetching ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Loading More...
+                      </>
+                    ) : (
+                      'Show More'
+                    )}
+                  </Button>
+                </div>
+              )}
 
-            {!hasMore && customers.length > 0 && !isFetching && (
-              <p className="text-center text-muted-foreground text-sm mt-6">
-                You've reached the end of the list.
-              </p>
-            )}
+              {!hasMore && customers.length > 0 && !isFetching && showCustomerPanel === null && (
+                <p className="text-center text-muted-foreground text-sm mt-6">
+                  You've reached the end of the list.
+                </p>
+              )}
 
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </ErrorBoundary>
   );

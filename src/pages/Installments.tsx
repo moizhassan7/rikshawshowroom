@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, Edit, Save, Loader2 } from 'lucide-react'; // Added Edit, Save, Loader2 icons
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, Edit, Save, Loader2 } from 'lucide-react';
 import { format, addMonths, isBefore, isAfter, parseISO } from 'date-fns';
 import { cn } from '@/lib/utils';
 
@@ -203,8 +203,9 @@ const InstallmentPage = () => {
       const customerName = plan.customers?.name?.toLowerCase() || '';
       const customerCnic = plan.customers?.cnic?.toLowerCase() || '';
       const rikshawRegNo = plan.rikshaws?.registration_number?.toLowerCase() || '';
+      const rikshawEngineNo = plan.rikshaws?.engine_number?.toLowerCase() || ''; // Added engine number
       const term = searchTerm.toLowerCase();
-      return customerName.includes(term) || customerCnic.includes(term) || rikshawRegNo.includes(term);
+      return customerName.includes(term) || customerCnic.includes(term) || rikshawRegNo.includes(term) || rikshawEngineNo.includes(term); // Updated search
     });
 
     filtered.sort((a: InstallmentPlan, b: InstallmentPlan) => {
@@ -268,7 +269,7 @@ const InstallmentPage = () => {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search by customer name, CNIC, or rickshaw registration..."
+                placeholder="Search by customer name, CNIC, rickshaw registration, or engine number..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-9 pr-4 py-2 rounded-md border"
@@ -552,6 +553,94 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     ).map(item => item.installment_number);
   }, [monthlySchedule, planDetails]);
 
+  // Function to generate and print a payment receipt
+  const generatePaymentReceipt = useCallback((payment: InstallmentPayment, finalRemainingBalance: number) => {
+    if (!planDetails) {
+      toast({ title: "Error", description: "Plan details not available for receipt.", variant: "destructive" });
+      return;
+    }
+
+    const receiptContent = `
+      <div style="font-family: 'Inter', sans-serif; padding: 10px; width: 100%; box-sizing: border-box; font-size: 10px; line-height: 1.4;">
+        <style>
+          @media print {
+            body { margin: 0; padding: 0; }
+            .receipt-container {
+              width: 100%; /* Take full width of the print area */
+              height: 148.5mm; /* Approximately 1/2 A4 height (297mm / 2) */
+              margin: 0;
+              padding: 10px;
+              box-sizing: border-box;
+              border: 1px solid #ccc; /* Optional: for visual separation */
+            }
+            .no-print { display: none; }
+          }
+        </style>
+        <div class="receipt-container">
+          <div style="text-align: center; border-bottom: 2px solid #333; padding-bottom: 5px; margin-bottom: 10px;">
+            <h2 style="margin: 0; font-size: 14px; color: #333;">AL-HAMD TRADERS</h2>
+            <p style="margin: 0; font-size: 8px; color: #666;">Railway Road Chowk Shamah, Sargodha</p>
+          </div>
+          <p style="text-align: center; font-weight: bold; margin-bottom: 10px; font-size: 11px;">PAYMENT RECEIPT</p>
+          <p style="margin-bottom: 5px;"><strong>Date:</strong> ${new Date(payment.payment_date).toLocaleDateString()}</p>
+          <p style="margin-bottom: 10px;"><strong>Receipt No:</strong> ${payment.id.substring(0, 8).toUpperCase()}</p>
+
+          <div style="margin-bottom: 10px; border: 1px dashed #ccc; padding: 5px;">
+            <p style="margin: 0; font-weight: bold;">Customer Details:</p>
+            <p style="margin: 0;"><strong>Name:</strong> ${planDetails.customers?.name}</p>
+            <p style="margin: 0;"><strong>Phone:</strong> ${planDetails.customers?.phone}</p>
+          </div>
+
+          <div style="margin-bottom: 10px; border: 1px dashed #ccc; padding: 5px;">
+            <p style="margin: 0; font-weight: bold;">Rickshaw Details:</p>
+            <p style="margin: 0;"><strong>Manufacturer:</strong> ${planDetails.rikshaws?.manufacturer}</p>
+            <p style="margin: 0;"><strong>Reg No:</strong> ${planDetails.rikshaws?.registration_number}</p>
+            <p style="margin: 0;"><strong>Engine No:</strong> ${planDetails.rikshaws?.engine_number}</p>
+          </div>
+
+          <div style="margin-bottom: 10px;">
+            <p style="margin: 0;"><strong>Payment Type:</strong> ${payment.payment_type === 'monthly' ? 'Monthly Installment' : 'Advance Adjustment'}</p>
+            ${payment.payment_type === 'monthly' && payment.installment_number ? `<p style="margin: 0;"><strong>Installment #:</strong> ${payment.installment_number}</p>` : ''}
+          </div>
+
+          <div style="margin-bottom: 10px; font-size: 12px; font-weight: bold; text-align: center; padding: 5px; background-color: #e0ffe0; border-radius: 3px;">
+            <p style="margin: 0;">Amount Received: Rs ${payment.amount_paid.toLocaleString()}</p>
+          </div>
+
+          <div style="margin-bottom: 10px; text-align: center; border-top: 1px solid #eee; padding-top: 5px;">
+            <p style="margin: 0;"><strong>Remaining Balance:</strong> Rs ${finalRemainingBalance.toLocaleString()}</p>
+          </div>
+
+          <p style="margin: 0; text-align: right; font-size: 9px;">Received By: ${payment.received_by}</p>
+          <p style="margin: 0; text-align: center; font-size: 8px; margin-top: 10px;">Thank You!</p>
+        </div>
+      </div>
+    `;
+
+    const printWindow = window.open('', '_blank'); // Open in new tab
+    if (printWindow) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Payment Receipt</title>
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+            <style>
+              body { font-family: 'Inter', sans-serif; margin: 0; padding: 0; }
+              @page { size: A4; margin: 0; } /* Set page size to A4 and remove margins */
+            </style>
+          </head>
+          <body>
+            ${receiptContent}
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.focus();
+      printWindow.print(); // Trigger print dialog
+    }
+  }, [planDetails, toast]);
+
+
   // Mutation to record a new payment
   const recordPaymentMutation = useMutation({
     mutationFn: async (newPayment: {
@@ -599,7 +688,12 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         title: "Payment Recorded!",
         description: `Rs ${amountPaid.toLocaleString()} received for ${paymentType === 'monthly' ? 'monthly installment' : 'advance adjustment'}.`,
       });
-      // Removed generatePaymentReceipt(data); as per user request
+
+      // Calculate the remaining balance for the receipt immediately after the new payment
+      // This uses the 'current' remainingBalanceOnPlan (before this payment) and subtracts the new payment amount
+      const newRemainingBalanceForReceipt = remainingBalanceOnPlan - data.amount_paid;
+      generatePaymentReceipt(data, newRemainingBalanceForReceipt); // Pass the new remaining balance
+
       setShowRecordPaymentForm(false);
       setAmountPaid(0);
       setReceivedBy('');
