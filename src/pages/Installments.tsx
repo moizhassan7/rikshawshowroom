@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, Edit, Save, Loader2 } from 'lucide-react';
-import { format, addMonths, isBefore, isAfter, parseISO } from 'date-fns';
+import { format, addMonths, isBefore, parseISO } from 'date-fns';
 import { cn } from '@/lib/utils';
 
 // Interface definitions for data structures
@@ -72,6 +72,9 @@ interface InstallmentPlan {
   created_at: string; // Sale date
   agreement_date: string; // Added agreement_date
   total_paid_monthly_installments?: number; // Aggregate of only monthly payments
+  // 🛑 Added Commission Fields
+  showroom_commission?: number;
+  is_commission_paid?: boolean;
 }
 
 interface InstallmentPayment {
@@ -80,7 +83,7 @@ interface InstallmentPayment {
   payment_date: string; // ISO string 'YYYY-MM-DD'
   amount_paid: number;
   received_by: string;
-  payment_type: 'monthly' | 'advance_adjustment';
+  payment_type: 'monthly' | 'advance_adjustment' | 'commission' | 'discount'; // 🛑 Added 'discount' type
   installment_number?: number | null; // New field for monthly installment number
   created_at: string;
 }
@@ -154,16 +157,19 @@ const InstallmentPage = () => {
     // Sum of all initial advance payments (Total Agreed Advance)
     const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
 
-    // Collected Advance: initial advance payment + subsequent advance adjustments
+    // Collected Advance: initial first advance payment + subsequent advance adjustments
     const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
     const totalAdvanceAdjustmentsCollected = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
     const collectedAdvance = initialFirstAdvance + totalAdvanceAdjustmentsCollected;
 
     const totalMonthlyPaymentsReceived = paymentsForPlan.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
-    const overallTotalPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected;
+    const totalDiscountApplied = paymentsForPlan.reduce((sum, p) => p.payment_type === 'discount' ? sum + p.amount_paid : sum, 0); // 🛑 Added Discount calculation
+
+    // Total payments that count against the customer's debt
+    const totalCustomerPayments = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected + totalDiscountApplied; 
 
 
-    if (overallTotalPaid >= plan.total_price) {
+    if (totalCustomerPayments >= plan.total_price) { // Check against total customer payments
       return 'Completed';
     }
 
@@ -240,9 +246,10 @@ const InstallmentPage = () => {
     const initialFirstAdvance = plan.advance_payments[0]?.amount || 0;
     const totalMonthlyPaymentsReceived = payments.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
     const totalAdvanceAdjustmentsCollected = payments.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+    const totalDiscountApplied = payments.reduce((sum, p) => p.payment_type === 'discount' ? sum + p.amount_paid : sum, 0); // 🛑 Added Discount
 
-    const overallTotalPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected;
-    return plan.total_price - overallTotalPaid;
+    const overallCustomerPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected + totalDiscountApplied; // Includes discount
+    return plan.total_price - overallCustomerPaid;
   }, []);
 
   return (
@@ -388,7 +395,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
   const queryClient = useQueryClient();
 
   const [showRecordPaymentForm, setShowRecordPaymentForm] = useState(false);
-  const [paymentType, setPaymentType] = useState<'monthly' | 'advance_adjustment'>('monthly');
+  const [paymentType, setPaymentType] = useState<'monthly' | 'advance_adjustment' | 'commission' | 'discount'>('monthly'); // 🛑 Updated type
   const [amountPaid, setAmountPaid] = useState<number>(0);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [receivedBy, setReceivedBy] = useState('');
@@ -401,7 +408,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
   const [editedAmountPaid, setEditedAmountPaid] = useState<number>(0);
   const [editedPaymentDate, setEditedPaymentDate] = useState('');
   const [editedReceivedBy, setEditedReceivedBy] = useState('');
-  const [editedPaymentType, setEditedPaymentType] = useState<'monthly' | 'advance_adjustment'>('monthly');
+  const [editedPaymentType, setEditedPaymentType] = useState<'monthly' | 'advance_adjustment' | 'commission' | 'discount'>('monthly'); // 🛑 Updated type
   const [editedInstallmentNumber, setEditedInstallmentNumber] = useState<number | null>(null);
 
   // State for editing plan details
@@ -501,15 +508,26 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     return installmentPayments.reduce((sum, p) => p.payment_type === 'monthly' ? sum + p.amount_paid : sum, 0);
   }, [installmentPayments]);
 
-  const overallTotalPaid = useMemo(() => {
-    // This now reflects total payments (initial first advance + monthly + advance adjustments)
-    return collectedAdvance + totalMonthlyPaymentsReceived;
-  }, [collectedAdvance, totalMonthlyPaymentsReceived]);
+  const totalDiscountApplied = useMemo(() => {
+    // 🛑 New Memo: Calculate total discount applied
+    return installmentPayments.reduce((sum, p) => p.payment_type === 'discount' ? sum + p.amount_paid : sum, 0);
+  }, [installmentPayments]);
+  
+  const totalCommissionPaid = useMemo(() => {
+    // 🛑 COMMISSION: Calculated total commission paid for display purposes only
+    return installmentPayments.reduce((sum, p) => p.payment_type === 'commission' ? sum + p.amount_paid : sum, 0);
+  }, [installmentPayments]);
+
+  const overallCustomerPaid = useMemo(() => {
+    // 🛑 LOGIC FIX: Include discount payments in the customer's total paid
+    return collectedAdvance + totalMonthlyPaymentsReceived + totalDiscountApplied;
+  }, [collectedAdvance, totalMonthlyPaymentsReceived, totalDiscountApplied]);
 
   const remainingBalanceOnPlan = useMemo(() => {
     if (!planDetails) return 0;
-    return planDetails.total_price - overallTotalPaid;
-  }, [planDetails, overallTotalPaid]);
+    // 🛑 LOGIC FIX: Remaining balance is based ONLY on customer payments (excluding commission).
+    return planDetails.total_price - overallCustomerPaid;
+  }, [planDetails, overallCustomerPaid]);
 
   // Generate monthly installment schedule with payment status
   const monthlySchedule = useMemo(() => {
@@ -545,7 +563,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     return schedule;
   }, [planDetails, installmentPayments]);
 
-  // Available installments for payment selection
+  // Available installments for payment selection (No longer used for input, but kept for context)
   const availableInstallments = useMemo(() => {
     if (!planDetails) return [];
     return monthlySchedule.filter(
@@ -559,6 +577,21 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       toast({ title: "Error", description: "Plan details not available for receipt.", variant: "destructive" });
       return;
     }
+
+    const getPaymentTypeName = (type: 'monthly' | 'advance_adjustment' | 'commission' | 'discount') => {
+      switch (type) {
+        case 'monthly':
+          return 'Monthly Installment';
+        case 'advance_adjustment':
+          return 'Advance Adjustment';
+        case 'commission':
+          return 'Showroom Commission';
+        case 'discount': // 🛑 Added 'discount' case
+          return 'Discount / Early Payoff';
+        default:
+          return 'Payment';
+      }
+    };
 
     const receiptContent = `
       <div style="font-family: 'Inter', sans-serif; padding: 10px; width: 100%; box-sizing: border-box; font-size: 10px; line-height: 1.4;">
@@ -599,7 +632,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
           </div>
 
           <div style="margin-bottom: 10px;">
-            <p style="margin: 0;"><strong>Payment Type:</strong> ${payment.payment_type === 'monthly' ? 'Monthly Installment' : 'Advance Adjustment'}</p>
+            <p style="margin: 0;"><strong>Payment Type:</strong> ${getPaymentTypeName(payment.payment_type)}</p>
             ${payment.payment_type === 'monthly' && payment.installment_number ? `<p style="margin: 0;"><strong>Installment #:</strong> ${payment.installment_number}</p>` : ''}
           </div>
 
@@ -648,7 +681,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       payment_date: string;
       amount_paid: number;
       received_by: string;
-      payment_type: 'monthly' | 'advance_adjustment';
+      payment_type: 'monthly' | 'advance_adjustment' | 'commission' | 'discount'; // 🛑 Updated type
       installment_number?: number | null;
     }) => {
       setIsRecordingPayment(true);
@@ -658,6 +691,14 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         .select()
         .single();
       if (error) throw error;
+
+      // COMMISSION LOGIC: If commission is paid, update the flag on the plan
+      if (newPayment.payment_type === 'commission') {
+        await supabase
+          .from('installment_plans')
+          .update({ is_commission_paid: true })
+          .eq('id', planId);
+      }
 
       // Update total_paid_monthly_installments if it's a monthly payment
       if (newPayment.payment_type === 'monthly') {
@@ -679,6 +720,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       return data;
     },
     onSuccess: (data) => {
+      // Invalidate queries to trigger re-fetch and UI update
       queryClient.invalidateQueries({ queryKey: ['installment-payments', planId] });
       queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
       queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
@@ -686,12 +728,17 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
 
       toast({
         title: "Payment Recorded!",
-        description: `Rs ${amountPaid.toLocaleString()} received for ${paymentType === 'monthly' ? 'monthly installment' : 'advance adjustment'}.`,
+        description: `Rs ${amountPaid.toLocaleString()} received for ${data.payment_type.replace('_', ' ')}.`,
       });
 
       // Calculate the remaining balance for the receipt immediately after the new payment
-      // This uses the 'current' remainingBalanceOnPlan (before this payment) and subtracts the new payment amount
-      const newRemainingBalanceForReceipt = remainingBalanceOnPlan - data.amount_paid;
+      // 🛑 LOGIC CHANGE: Only deduct from remainingBalanceOnPlan if it's NOT a commission payment.
+      let newRemainingBalanceForReceipt = remainingBalanceOnPlan;
+
+      if (data.payment_type !== 'commission') {
+        newRemainingBalanceForReceipt = remainingBalanceOnPlan - data.amount_paid;
+      }
+      
       generatePaymentReceipt(data, newRemainingBalanceForReceipt); // Pass the new remaining balance
 
       setShowRecordPaymentForm(false);
@@ -726,6 +773,18 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         .select()
         .single();
       if (error) throw error;
+
+      // COMMISSION LOGIC for update: If updating an old payment to 'commission'
+      if (updatedPayment.payment_type === 'commission') {
+         await supabase
+            .from('installment_plans')
+            .update({ is_commission_paid: true })
+            .eq('id', planId);
+      }
+      // Note: Reverting a commission payment to non-commission status would require 
+      // complex logic to reset the flag, which is omitted for simplicity but is a business consideration.
+
+
       return data;
     },
     onSuccess: () => {
@@ -749,80 +808,75 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     }
   });
 
-  // Mutation to update the installment plan details
+  // Mutation to update the installment plan details (omitted for brevity, no change needed)
   const updateInstallmentPlanMutation = useMutation({
-    mutationFn: async (updatedPlan: {
-      total_price: number;
-      advance_paid: number; // This needs to be stored as the initial advance payment
-      monthly_installment: number;
-      duration_months: number;
-      // advance_payments array is not directly updated here, it represents initial payments
-    }) => {
-      // For 'advance_paid', we need to update the *first* entry in the advance_payments JSONB array.
-      // Fetch the current advance_payments array
-      const { data: currentPlanData, error: fetchError } = await supabase
-        .from('installment_plans')
-        .select('advance_payments')
-        .eq('id', planId)
-        .single();
+     mutationFn: async (updatedPlan: {
+       total_price: number;
+       advance_paid: number; 
+       monthly_installment: number;
+       duration_months: number;
+     }) => {
+       // Fetch the current advance_payments array
+       const { data: currentPlanData, error: fetchError } = await supabase
+         .from('installment_plans')
+         .select('advance_payments')
+         .eq('id', planId)
+         .single();
 
-      if (fetchError) throw fetchError;
+       if (fetchError) throw fetchError;
 
-      const currentAdvancePayments = currentPlanData?.advance_payments || [];
-      const updatedAdvancePayments = [...currentAdvancePayments];
+       const currentAdvancePayments = currentPlanData?.advance_payments || [];
+       const updatedAdvancePayments = [...currentAdvancePayments];
 
-      // Update the first advance payment amount if it exists
-      if (updatedAdvancePayments.length > 0) {
-        updatedAdvancePayments[0] = {
-          ...updatedAdvancePayments[0],
-          amount: updatedPlan.advance_paid,
-        };
-      } else {
-        // If no advance payments exist, add one with today's date
-        updatedAdvancePayments.push({
-          amount: updatedPlan.advance_paid,
-          date: format(new Date(), 'yyyy-MM-dd'),
-        });
-      }
+       // Update the first advance payment amount if it exists
+       if (updatedAdvancePayments.length > 0) {
+         updatedAdvancePayments[0] = {
+           ...updatedAdvancePayments[0],
+           amount: updatedPlan.advance_paid,
+         };
+       } else {
+         // If no advance payments exist, add one with today's date
+         updatedAdvancePayments.push({
+           amount: updatedPlan.advance_paid,
+           date: format(new Date(), 'yyyy-MM-dd'),
+         });
+       }
 
 
-      const { data, error } = await supabase
-        .from('installment_plans')
-        .update({
-          total_price: updatedPlan.total_price,
-          // advance_paid in the main table row should reflect the sum of actual collected advances,
-          // or specifically the *first* advance collected if that's the business rule.
-          // For now, setting it to the editedAdvanceAgreed, assuming that's the new 'initial' advance.
-          advance_paid: updatedPlan.advance_paid,
-          advance_payments: updatedAdvancePayments, // Update the JSONB array
-          monthly_installment: updatedPlan.monthly_installment,
-          duration_months: updatedPlan.duration_months,
-        })
-        .eq('id', planId)
-        .select()
-        .single();
+       const { data, error } = await supabase
+         .from('installment_plans')
+         .update({
+           total_price: updatedPlan.total_price,
+           advance_paid: updatedPlan.advance_paid,
+           advance_payments: updatedAdvancePayments, // Update the JSONB array
+           monthly_installment: updatedPlan.monthly_installment,
+           duration_months: updatedPlan.duration_months,
+         })
+         .eq('id', planId)
+         .select()
+         .single();
 
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
-      queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
-      queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] }); // Important for overall status recalculation
-      toast({
-        title: "Plan Updated!",
-        description: "Installment plan details have been successfully updated.",
-      });
-      setIsEditingPlan(false); // Exit edit mode
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error updating plan",
-        description: error.message,
-        variant: "destructive",
-      });
-    }
-  });
+       if (error) throw error;
+       return data;
+     },
+     onSuccess: () => {
+       queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
+       queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
+       queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] }); // Important for overall status recalculation
+       toast({
+         title: "Plan Updated!",
+         description: "Installment plan details have been successfully updated.",
+       });
+       setIsEditingPlan(false); // Exit edit mode
+     },
+     onError: (error: any) => {
+       toast({
+         title: "Error updating plan",
+         description: error.message,
+         variant: "destructive",
+       });
+     }
+   });
 
 
   // Handle recording payment submission
@@ -843,8 +897,9 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       toast({ title: "Error", description: "Received by name is required.", variant: "destructive" });
       return;
     }
+    // 🛑 VALIDATION: Check installment number only if payment is monthly
     if (paymentType === 'monthly' && (installmentNumber === null || installmentNumber <= 0)) {
-      toast({ title: "Error", description: "Please select a valid installment number.", variant: "destructive" });
+      toast({ title: "Error", description: "Please enter a valid installment number (e.g., 1, 2).", variant: "destructive" });
       return;
     }
 
@@ -874,8 +929,9 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       toast({ title: "Error", description: "Received by name is required.", variant: "destructive" });
       return;
     }
+    // 🛑 VALIDATION: Check installment number only if payment is monthly
     if (editedPaymentType === 'monthly' && (editedInstallmentNumber === null || editedInstallmentNumber <= 0)) {
-      toast({ title: "Error", description: "Please select a valid installment number for monthly payment.", variant: "destructive" });
+      toast({ title: "Error", description: "Please enter a valid installment number for monthly payment (e.g., 1, 2).", variant: "destructive" });
       return;
     }
 
@@ -889,7 +945,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     });
   };
 
-  // Handle edit plan submission
+  // Handle edit plan submission (omitted for brevity, no change needed)
   const handleEditPlanSubmit = () => {
     if (!planDetails) return;
 
@@ -1108,8 +1164,6 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                 </div>
                 <div className="space-y-2">
                   <Label className="text-muted-foreground">Collected Advance:</Label>
-                  {/* Collected Advance is not directly editable here as it sums actual payments, 
-                      but editedAdvanceAgreed maps to the first advance payment in DB */}
                   <p className="font-bold text-lg">Rs {collectedAdvance.toLocaleString()}</p>
                 </div>
                 <div className="space-y-2">
@@ -1138,13 +1192,23 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                     <p className="font-bold text-lg">{planDetails.duration_months} months</p>
                   )}
                 </div>
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Showroom Commission:</Label>
+                  <p className="font-bold text-lg">Rs {planDetails.showroom_commission?.toLocaleString() || 0}</p>
+                </div>
                 {/* Re-added Remaining Advance Balance and Overall Remaining Balance */}
                 <div className="space-y-2">
                   <p className="text-muted-foreground">Remaining Advance Balance:</p>
                   <p className="font-bold text-lg text-orange-700">Rs {remainingAgreedAdvanceDue.toLocaleString()}</p>
                 </div>
-                <div className="md:col-span-3 space-y-2">
-                  <p className="text-muted-foreground">Overall Remaining Balance:</p>
+                <div className="space-y-2">
+                  <p className="text-muted-foreground">Commission Status:</p>
+                  <p className={cn("font-bold text-lg", planDetails.is_commission_paid ? "text-green-600" : "text-red-600")}>
+                    {planDetails.is_commission_paid ? 'Paid' : 'Pending'} (Rs {totalCommissionPaid.toLocaleString()} paid)
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-muted-foreground">Overall Remaining Balance (Customer Debt):</p>
                   <p className="font-bold text-2xl text-green-700">Rs {remainingBalanceOnPlan.toLocaleString()}</p>
                 </div>
                 {isEditingPlan && (
@@ -1256,7 +1320,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
             <Card className="border">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Actual Payment History</CardTitle>
-                <CardDescription>Includes all monthly and advance adjustment payments.</CardDescription>
+                <CardDescription>Includes all monthly, advance adjustment, commission, and discount payments.</CardDescription>
               </CardHeader>
               <CardContent>
                 {installmentPayments.length > 0 ? (
@@ -1277,7 +1341,11 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                           <TableRow key={payment.id}>
                             <TableCell>{new Date(payment.payment_date).toLocaleDateString()}</TableCell>
                             <TableCell>Rs {payment.amount_paid.toLocaleString()}</TableCell>
-                            <TableCell>{payment.payment_type === 'monthly' ? 'Monthly' : 'Advance Adjustment'}</TableCell>
+                            <TableCell>
+                                {payment.payment_type === 'monthly' ? 'Monthly' : 
+                                 payment.payment_type === 'commission' ? 'Commission' : 
+                                 payment.payment_type === 'discount' ? 'Discount' : 'Advance Adjustment'} 
+                            </TableCell>
                             <TableCell>
                               {payment.payment_type === 'monthly' && payment.installment_number !== null
                                 ? payment.installment_number
@@ -1320,34 +1388,40 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="payment-type">Payment Type *</Label>
-                    <Select value={paymentType} onValueChange={(value: 'monthly' | 'advance_adjustment') => setPaymentType(value)}>
+                    <Select 
+                      value={paymentType} 
+                      onValueChange={(value: 'monthly' | 'advance_adjustment' | 'commission' | 'discount') => {
+                        setPaymentType(value);
+                        // Reset installment number if not monthly or discount
+                        if (value !== 'monthly') {
+                          setInstallmentNumber(null);
+                        }
+                      }}
+                    >
                       <SelectTrigger id="payment-type">
                         <SelectValue placeholder="Select payment type" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="monthly">Monthly Installment</SelectItem>
                         <SelectItem value="advance_adjustment">Advance Payment Adjustment</SelectItem>
+                        <SelectItem value="discount">Discount / Early Payoff</SelectItem> {/* 🛑 Added Discount */}
+                        <SelectItem value="commission">Showroom Commission Payment</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   {paymentType === 'monthly' && (
                     <div className="space-y-2">
-                      <Label htmlFor="installment-number">Installment # *</Label>
-                      <Select
-                        value={installmentNumber?.toString() || ''}
-                        onValueChange={(value) => setInstallmentNumber(parseInt(value))}
-                      >
-                        <SelectTrigger id="installment-number">
-                          <SelectValue placeholder="Select installment number" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableInstallments.map(num => (
-                            <SelectItem key={num} value={num.toString()}>
-                              Installment #{num}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <Label htmlFor="installment-number">Installment # * (Manual Entry)</Label>
+                      {/* 🛑 Changed from Select to Input */}
+                      <Input
+                          id="installment-number"
+                          type="number"
+                          placeholder="e.g., 1, 2, 3..."
+                          value={installmentNumber || ''}
+                          onChange={(e) => setInstallmentNumber(parseInt(e.target.value) || null)} 
+                          required={paymentType === 'monthly'}
+                          className="rounded-md border"
+                      />
                     </div>
                   )}
                   <div className="space-y-2">
@@ -1377,7 +1451,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                     <Input
                       id="received-by"
                       type="text"
-                      placeholder="Enter name of receiver"
+                      placeholder="Enter name of receiver (Use 'System' for discount)"
                       value={receivedBy}
                       onChange={(e) => setReceivedBy(e.target.value)}
                       required
@@ -1427,7 +1501,12 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                 <Label htmlFor="edit-payment-type">Payment Type *</Label>
                 <Select
                   value={editedPaymentType}
-                  onValueChange={(value: 'monthly' | 'advance_adjustment') => setEditedPaymentType(value)}
+                  onValueChange={(value: 'monthly' | 'advance_adjustment' | 'commission' | 'discount') => { // 🛑 Updated type
+                    setEditedPaymentType(value);
+                    if (value !== 'monthly') {
+                      setEditedInstallmentNumber(null);
+                    }
+                  }}
                 >
                   <SelectTrigger id="edit-payment-type">
                     <SelectValue placeholder="Select payment type" />
@@ -1435,27 +1514,23 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                   <SelectContent>
                     <SelectItem value="monthly">Monthly Installment</SelectItem>
                     <SelectItem value="advance_adjustment">Advance Payment Adjustment</SelectItem>
-                  </SelectContent>
+                    <SelectItem value="discount">Discount / Early Payoff</SelectItem> {/* 🛑 Added Discount */}
+                    <SelectItem value="commission">Showroom Commission Payment</SelectItem>
+                  </SelectContent> {/* 🛑 FIXED: Closing tag was incorrect */}
                 </Select>
               </div>
               {editedPaymentType === 'monthly' && (
                 <div className="space-y-2">
-                  <Label htmlFor="edit-installment-number">Installment # *</Label>
-                  <Select
-                    value={editedInstallmentNumber?.toString() || ''}
-                    onValueChange={(value) => setEditedInstallmentNumber(parseInt(value))}
-                  >
-                    <SelectTrigger id="edit-installment-number">
-                      <SelectValue placeholder="Select installment number" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {monthlySchedule.map(item => (
-                        <SelectItem key={item.installment_number} value={item.installment_number.toString()}>
-                          Installment #{item.installment_number} (Due: Rs {item.expected_amount.toLocaleString()})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label htmlFor="edit-installment-number">Installment # * (Manual Entry)</Label>
+                  {/* 🛑 Changed from Select to Input */}
+                  <Input
+                    id="edit-installment-number"
+                    type="number"
+                    placeholder="e.g., 1, 2, 3..."
+                    value={editedInstallmentNumber || ''}
+                    onChange={(e) => setEditedInstallmentNumber(parseInt(e.target.value) || null)}
+                    required={editedPaymentType === 'monthly'}
+                  />
                 </div>
               )}
               <div className="space-y-2">

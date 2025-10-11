@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, TrendingUp, AlertCircle, Clock, CheckCircle, Users, ShoppingCart, TrendingDown, Loader2 } from 'lucide-react';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, TrendingUp, AlertCircle, Clock, CheckCircle, Users, ShoppingCart, TrendingDown, Loader2, Warehouse } from 'lucide-react';
 import { format, addMonths, isBefore, isAfter, parseISO, startOfMonth, endOfMonth, eachMonthOfInterval, startOfYear, endOfYear, getMonth, getYear, addDays, startOfDay } from 'date-fns';
 import { cn } from '@/lib/utils';
 
@@ -149,6 +149,20 @@ const Dashboard = () => {
       const { count, error } = await supabase
         .from('rikshaws')
         .select('*', { count: 'exact', head: true });
+      if (error) throw error;
+      return count || 0;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // 🛑 FETCH: Fetch available rickshaws in stock
+  const { data: availableStock = 0, isLoading: loadingAvailableStock } = useQuery<number>({
+    queryKey: ['available-stock'],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from('rikshaws')
+        .select('*', { count: 'exact', head: true })
+        .eq('availability', 'unsold');
       if (error) throw error;
       return count || 0;
     },
@@ -456,23 +470,26 @@ const Dashboard = () => {
           </p>
         </div>
 
-        {/* Key Metrics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {/* Key Metrics Cards (5 columns) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6">
+          
+          {/* New Available Stock Card */}
           <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Rickshaws</CardTitle>
-              <Car className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium">Available Stock</CardTitle>
+              <Warehouse className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">
-                {loadingTotalRickshaws ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : totalRickshaws.toLocaleString()}
+              <div className="text-2xl font-bold text-blue-600">
+                {loadingAvailableStock ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : availableStock.toLocaleString()}
               </div>
               <p className="text-xs text-muted-foreground">
-                Overall vehicle inventory.
+                Rickshaws ready for sale.
               </p>
             </CardContent>
           </Card>
 
+          {/* Existing Cards adjusted for 5 column layout */}
           <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Sold This Month</CardTitle>
@@ -483,7 +500,71 @@ const Dashboard = () => {
                 {loadingSoldThisMonth ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : soldThisMonth.toLocaleString()}
               </div>
               <p className="text-xs text-muted-foreground">
-                New plans created in {format(today, 'MMMM yyyy')}.
+                New plans created in {format(today, 'MMM yyyy')}.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Revenue</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                {loadingPlans ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${totalRevenue.toLocaleString()}`}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Value of all sales plans.
+              </p>
+            </CardContent>
+          </Card>
+          
+          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Profit This Month</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-green-600">
+                {loadingPlans ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${currentMonthProfit.toLocaleString()}`}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Net profit from sales in {format(today, 'MMM yyyy')}.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Remaining Balance</CardTitle>
+              <TrendingDown className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-red-600">
+                {(loadingAllPayments || loadingPlans) ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${totalRemainingBalance.toLocaleString()}`}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Total customer debt outstanding.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Financial and Status Metrics (Additional Cards) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+
+          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Total Rickshaws</CardTitle>
+              <Car className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                {loadingTotalRickshaws ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : totalRickshaws.toLocaleString()}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Overall vehicle inventory (sold + unsold).
               </p>
             </CardContent>
           </Card>
@@ -505,111 +586,36 @@ const Dashboard = () => {
 
           <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Revenue</CardTitle>
-              <DollarSign className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {loadingPlans ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${totalRevenue.toLocaleString()}`}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Cumulative value of all sales plans.
-              </p>
-            </CardContent>
-          </Card>
-
-          {/* New Metrics */}
-          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Investment This Month</CardTitle>
-              <ShoppingCart className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {loadingCurrentMonthPurchases ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${currentMonthInvestment.toLocaleString()}`}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Total purchase cost of rickshaws acquired in {format(today, 'MMMM yyyy')}.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Profit This Month</CardTitle>
-              <DollarSign className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {loadingPlans ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${currentMonthProfit.toLocaleString()}`}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Net profit from sales in {format(today, 'MMMM yyyy')}.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Payments Received</CardTitle>
-              <CheckCircle className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {(loadingAllPayments || loadingPlans) ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${totalPaymentsReceived.toLocaleString()}`}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Total amount collected to date.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Remaining Balance</CardTitle>
-              <DollarSign className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {(loadingAllPayments || loadingPlans) ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${totalRemainingBalance.toLocaleString()}`}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Total outstanding balance across all plans.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Overdue Installments</CardTitle>
-              <AlertCircle className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium">Overdue Plans</CardTitle>
+              <AlertCircle className="h-4 w-4 text-red-600" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-red-600">
                 {(loadingPlans || loadingAllPayments) ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : overdueInstallmentsCount.toLocaleString()}
               </div>
               <p className="text-xs text-muted-foreground">
-                Active plans with missed payments.
+                Plans with one or more missed monthly payments.
               </p>
             </CardContent>
           </Card>
 
           <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Advance Pending</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium">Advance Pending Plans</CardTitle>
+              <Clock className="h-4 w-4 text-orange-600" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-orange-600">
                 {(loadingPlans || loadingAllPayments) ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : advancePendingCount.toLocaleString()}
               </div>
               <p className="text-xs text-muted-foreground">
-                Plans with uncollected initial advance.
+                Plans with incomplete initial advance payment.
               </p>
             </CardContent>
           </Card>
-        </div>
 
+        </div>
+        
         {/* Upcoming Installments Table */}
         <Card className="border rounded-lg shadow-sm">
           <CardHeader>
@@ -673,6 +679,7 @@ const Dashboard = () => {
             )}
           </CardContent>
         </Card>
+
       </div>
     </ErrorBoundary>
   );
