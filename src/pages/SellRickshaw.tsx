@@ -143,7 +143,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery<Rikshaw[]>(
 
   // Handler for adding a new advance payment field
   const addAdvancePayment = () => {
-    if (advancePayments.length < 4) { // Limit to a maximum of 4 advance payments
+    if (advancePayments.length < 6) { // Limit to a maximum of 4 advance payments
       setAdvancePayments([
         ...advancePayments,
         { amount: 0, date: new Date().toISOString().split('T')[0] } // Initialize with current date
@@ -773,7 +773,7 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery<Rikshaw[]>(
             <div className="space-y-4 pt-4 border-t border-gray-200">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">Advance Due Schedule</h3>
-                {advancePayments.length < 4 && (
+                {advancePayments.length < 6 && (
                   <Button 
                     size="sm" 
                     variant="outline"

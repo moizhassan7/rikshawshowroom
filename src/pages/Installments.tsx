@@ -249,7 +249,15 @@ const InstallmentPage = () => {
     const totalDiscountApplied = payments.reduce((sum, p) => p.payment_type === 'discount' ? sum + p.amount_paid : sum, 0); // 🛑 Added Discount
 
     const overallCustomerPaid = initialFirstAdvance + totalMonthlyPaymentsReceived + totalAdvanceAdjustmentsCollected + totalDiscountApplied; // Includes discount
-    return plan.total_price - overallCustomerPaid;
+    
+    // Commission Calculation
+    const totalCommissionPaid = payments.reduce((sum, p) => p.payment_type === 'commission' ? sum + p.amount_paid : sum, 0);
+    const totalOutstandingCommission = (plan.showroom_commission || 0) - totalCommissionPaid;
+    
+    const customerDebt = plan.total_price - overallCustomerPaid;
+    
+    // Remaining Balance = Customer Debt + Outstanding Commission
+    return customerDebt + totalOutstandingCommission;
   }, []);
 
   return (
@@ -523,11 +531,18 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     return collectedAdvance + totalMonthlyPaymentsReceived + totalDiscountApplied;
   }, [collectedAdvance, totalMonthlyPaymentsReceived, totalDiscountApplied]);
 
+  // 🛑 New Memo: Calculate total outstanding commission (Commission Owed - Commission Paid)
+  const totalOutstandingCommission = useMemo(() => {
+    if (!planDetails) return 0;
+    return (planDetails.showroom_commission || 0) - totalCommissionPaid;
+  }, [planDetails, totalCommissionPaid]);
+
   const remainingBalanceOnPlan = useMemo(() => {
     if (!planDetails) return 0;
-    // 🛑 LOGIC FIX: Remaining balance is based ONLY on customer payments (excluding commission).
-    return planDetails.total_price - overallCustomerPaid;
-  }, [planDetails, overallCustomerPaid]);
+    // 🛑 MODIFIED LOGIC (User Request): Remaining balance is the Customer Debt (Total Price - Customer Paid) PLUS the Outstanding Showroom Commission.
+    const customerDebt = planDetails.total_price - overallCustomerPaid;
+    return customerDebt + totalOutstandingCommission;
+  }, [planDetails, overallCustomerPaid, totalOutstandingCommission]);
 
   // Generate monthly installment schedule with payment status
   const monthlySchedule = useMemo(() => {
@@ -731,13 +746,10 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         description: `Rs ${amountPaid.toLocaleString()} received for ${data.payment_type.replace('_', ' ')}.`,
       });
 
-      // Calculate the remaining balance for the receipt immediately after the new payment
-      // 🛑 LOGIC CHANGE: Only deduct from remainingBalanceOnPlan if it's NOT a commission payment.
-      let newRemainingBalanceForReceipt = remainingBalanceOnPlan;
-
-      if (data.payment_type !== 'commission') {
-        newRemainingBalanceForReceipt = remainingBalanceOnPlan - data.amount_paid;
-      }
+      // Calculate the remaining balance for the receipt immediately after the new payment.
+      // The remainingBalanceOnPlan is the total of customer debt + outstanding commission, 
+      // so any payment (customer or commission) reduces this overall debt.
+      const newRemainingBalanceForReceipt = remainingBalanceOnPlan - data.amount_paid;
       
       generatePaymentReceipt(data, newRemainingBalanceForReceipt); // Pass the new remaining balance
 
@@ -1208,7 +1220,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-muted-foreground">Overall Remaining Balance (Customer Debt):</p>
+                  <p className="text-muted-foreground">Overall Remaining Balance (Customer Debt + Outstanding Commission):</p>
                   <p className="font-bold text-2xl text-green-700">Rs {remainingBalanceOnPlan.toLocaleString()}</p>
                 </div>
                 {isEditingPlan && (
@@ -1270,6 +1282,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
             <Card className="border">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Monthly Installment Schedule</CardTitle>
+                <CardDescription>Includes all scheduled and upcoming monthly installments.</CardDescription>
               </CardHeader>
               <CardContent>
                 {isPlanCompleted ? (
@@ -1314,6 +1327,20 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                   <p className="text-muted-foreground">No monthly installment schedule available.</p>
                 )}
               </CardContent>
+              {/* Final Payment / Early Settlement Amount (User Request) */}
+              {remainingBalanceOnPlan > 0 && (
+                <CardContent className="pt-0">
+                  <div className="mt-4 p-4 border-2 border-dashed border-red-400 bg-red-50 rounded-md">
+                    <div className="flex justify-between items-center">
+                      <h4 className="text-lg font-bold text-red-700">Final Payment / Early Settlement Amount:</h4>
+                      <p className="text-2xl font-extrabold text-red-900">
+                        Rs {remainingBalanceOnPlan.toLocaleString()}
+                      </p>
+                    </div>
+                    <p className="text-sm text-red-600 mt-1">This is the total amount required to immediately clear the customer's full debt (Remaining Customer Debt + Outstanding Showroom Commission).</p>
+                  </div>
+                </CardContent>
+              )}
             </Card>
 
             {/* Actual Payment History */}
