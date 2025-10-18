@@ -258,6 +258,7 @@ const InstallmentPage = () => {
     
     // Remaining Balance = Customer Debt + Outstanding Commission
     return customerDebt + totalOutstandingCommission;
+
   }, []);
 
   return (
@@ -539,7 +540,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
 
   const remainingBalanceOnPlan = useMemo(() => {
     if (!planDetails) return 0;
-    // 🛑 MODIFIED LOGIC (User Request): Remaining balance is the Customer Debt (Total Price - Customer Paid) PLUS the Outstanding Showroom Commission.
+    // 🛑 MODIFIED LOGIC (User Request in prior step): Remaining balance is the Customer Debt (Total Price - Customer Paid) PLUS the Outstanding Showroom Commission.
     const customerDebt = planDetails.total_price - overallCustomerPaid;
     return customerDebt + totalOutstandingCommission;
   }, [planDetails, overallCustomerPaid, totalOutstandingCommission]);
@@ -550,7 +551,14 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     const schedule = [];
     // Use agreement_date instead of created_at for saleDate
     const saleDate = parseISO(planDetails.agreement_date);
+    const duration = planDetails.duration_months;
+    const monthlyAmount = planDetails.monthly_installment;
+    const initialAdvance = collectedAdvance; 
+    const totalDiscount = totalDiscountApplied;
 
+    // 1. Total Customer Debt that the monthly installments MUST cover.
+    const totalMonthlyTarget = Math.max(0, planDetails.total_price - initialAdvance - totalDiscount);
+    
     // Create a map of payments by installment number
     const paymentsByInstallment: Record<number, number> = {};
     installmentPayments
@@ -561,22 +569,83 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         }
       });
 
-    for (let i = 1; i <= planDetails.duration_months; i++) {
+    for (let i = 1; i <= duration; i++) {
       const dueDate = addMonths(saleDate, i);
       const paidAmount = paymentsByInstallment[i] || 0;
-      const isPaid = paidAmount >= planDetails.monthly_installment;
-      const isPartiallyPaid = paidAmount > 0 && paidAmount < planDetails.monthly_installment;
+      let expected_amount = monthlyAmount;
+      
+      // 🛑 MODIFIED LOGIC (User Request): Make the last installment absorb the final remaining customer debt.
+      if (i === duration) {
+        // Sum of standard monthly amounts for the first (N-1) installments
+        const standardExpectedForPreviousMonths = (duration - 1) * monthlyAmount;
+        
+        // Remaining amount that the last installment must cover
+        const remainingDebtToClear = totalMonthlyTarget - standardExpectedForPreviousMonths;
+
+        // The expected amount for the last installment is this remaining amount, 
+        // ensuring it's not negative (e.g., if totalMonthlyTarget was 0 due to an early full advance/discount).
+        expected_amount = Math.max(0, remainingDebtToClear);
+        
+        // Round to avoid display issues with fractional currency units
+        expected_amount = Math.round(expected_amount);
+
+      } else {
+        // For all installments before the last one, use the standard monthly amount.
+        expected_amount = monthlyAmount;
+      }
+      
+      const isPaid = paidAmount >= expected_amount;
+      const isPartiallyPaid = paidAmount > 0 && paidAmount < expected_amount;
 
       schedule.push({
         installment_number: i,
         due_date: format(dueDate, 'yyyy-MM-dd'),
-        expected_amount: planDetails.monthly_installment,
+        expected_amount: expected_amount, 
         paid_amount: paidAmount,
         status: isPaid ? 'Paid' : isPartiallyPaid ? 'Partially Paid' : 'Unpaid'
       });
     }
     return schedule;
-  }, [planDetails, installmentPayments]);
+  }, [planDetails, installmentPayments, collectedAdvance, totalDiscountApplied]); 
+
+  // 🛑 New Memo: Combine regular payments and the first advance payment for the history table
+  const combinedPaymentHistory = useMemo(() => {
+      if (!planDetails) return installmentPayments;
+      
+      const initialAdvancePayment = planDetails.advance_payments?.[0];
+
+      // Create a mock InstallmentPayment structure for the initial advance
+      let initialPayment: InstallmentPayment[] = [];
+      if (initialAdvancePayment) {
+          initialPayment = [{
+              id: 'initial-' + planId, // Unique ID for keying
+              installment_plan_id: planId,
+              payment_date: initialAdvancePayment.date,
+              amount_paid: initialAdvancePayment.amount,
+              received_by: 'N/A (Initial Advance)',
+              payment_type: 'advance_adjustment' as const, // Treat as an advance adjustment payment type
+              installment_number: null,
+              created_at: planDetails.created_at,
+          }];
+      }
+      
+      // Combine and sort by date (and then creation time for payments on the same date)
+      const combined = [...initialPayment, ...installmentPayments];
+      
+      combined.sort((a, b) => {
+        const dateA = new Date(a.payment_date).getTime();
+        const dateB = new Date(b.payment_date).getTime();
+        if (dateA !== dateB) return dateA - dateB;
+        
+        // Fallback to created_at for tie-breaking on the same day
+        const createdA = new Date(a.created_at).getTime();
+        const createdB = new Date(b.created_at).getTime();
+        return createdA - createdB;
+      });
+
+      return combined;
+  }, [planDetails, installmentPayments, planId]);
+
 
   // Available installments for payment selection (No longer used for input, but kept for context)
   const availableInstallments = useMemo(() => {
@@ -598,6 +667,10 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         case 'monthly':
           return 'Monthly Installment';
         case 'advance_adjustment':
+          // Check if this is the initial payment being rendered
+          if (payment.id.startsWith('initial-')) {
+            return 'Initial Advance Payment';
+          }
           return 'Advance Adjustment';
         case 'commission':
           return 'Showroom Commission';
@@ -1282,7 +1355,6 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
             <Card className="border">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Monthly Installment Schedule</CardTitle>
-                <CardDescription>Includes all scheduled and upcoming monthly installments.</CardDescription>
               </CardHeader>
               <CardContent>
                 {isPlanCompleted ? (
@@ -1306,7 +1378,14 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                           <TableRow key={index}>
                             <TableCell>{item.installment_number}</TableCell>
                             <TableCell>{new Date(item.due_date).toLocaleDateString()}</TableCell>
-                            <TableCell>Rs {item.expected_amount.toLocaleString()}</TableCell>
+                            <TableCell>
+                                {/* Highlight the last installment if it's the large, final amount */}
+                                <span className={cn(
+                                    item.installment_number === planDetails.duration_months && item.expected_amount !== planDetails.monthly_installment ? 'font-bold text-red-600' : ''
+                                )}>
+                                    Rs {item.expected_amount.toLocaleString()}
+                                </span>
+                            </TableCell>
                             <TableCell>
                               <span className={cn(
                                 "px-2 py-1 rounded-full text-xs font-medium",
@@ -1327,30 +1406,16 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                   <p className="text-muted-foreground">No monthly installment schedule available.</p>
                 )}
               </CardContent>
-              {/* Final Payment / Early Settlement Amount (User Request) */}
-              {remainingBalanceOnPlan > 0 && (
-                <CardContent className="pt-0">
-                  <div className="mt-4 p-4 border-2 border-dashed border-red-400 bg-red-50 rounded-md">
-                    <div className="flex justify-between items-center">
-                      <h4 className="text-lg font-bold text-red-700">Final Payment / Early Settlement Amount:</h4>
-                      <p className="text-2xl font-extrabold text-red-900">
-                        Rs {remainingBalanceOnPlan.toLocaleString()}
-                      </p>
-                    </div>
-                    <p className="text-sm text-red-600 mt-1">This is the total amount required to immediately clear the customer's full debt (Remaining Customer Debt + Outstanding Showroom Commission).</p>
-                  </div>
-                </CardContent>
-              )}
             </Card>
 
             {/* Actual Payment History */}
             <Card className="border">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Actual Payment History</CardTitle>
-                <CardDescription>Includes all monthly, advance adjustment, commission, and discount payments.</CardDescription>
+                <CardDescription>Includes all advance, monthly, commission, and discount payments.</CardDescription>
               </CardHeader>
               <CardContent>
-                {installmentPayments.length > 0 ? (
+                {combinedPaymentHistory.length > 0 ? (
                   <div className="overflow-x-auto rounded-md border">
                     <Table>
                       <TableHeader>
@@ -1364,12 +1429,13 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {installmentPayments.map((payment: InstallmentPayment) => (
+                        {combinedPaymentHistory.map((payment: InstallmentPayment) => (
                           <TableRow key={payment.id}>
                             <TableCell>{new Date(payment.payment_date).toLocaleDateString()}</TableCell>
                             <TableCell>Rs {payment.amount_paid.toLocaleString()}</TableCell>
                             <TableCell>
-                                {payment.payment_type === 'monthly' ? 'Monthly' : 
+                                {payment.id.startsWith('initial-') ? 'Initial Advance' :
+                                 payment.payment_type === 'monthly' ? 'Monthly' : 
                                  payment.payment_type === 'commission' ? 'Commission' : 
                                  payment.payment_type === 'discount' ? 'Discount' : 'Advance Adjustment'} 
                             </TableCell>
@@ -1380,13 +1446,18 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                             </TableCell>
                             <TableCell>{payment.received_by}</TableCell>
                             <TableCell className="text-right">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => openEditPaymentModal(payment)}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
+                              {/* Only show edit button for payments made post-sale (i.e., not the initial advance) */}
+                              {payment.id.startsWith('initial-') ? (
+                                <span className="text-muted-foreground">N/A</span>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => openEditPaymentModal(payment)}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                              )}
                             </TableCell>
                           </TableRow>
                         ))}
