@@ -404,12 +404,15 @@ const ReportPage = () => {
       </Card>
       
       <div className="pt-4">
-        <h2 className="text-xl font-semibold mb-4 text-gray-800 flex items-center gap-2">
-          $ Pending Payments Overview
+        <h2 className="text-xl font-semibold mb-2 text-gray-800 flex items-center gap-2">
+          Pending Payments Overview
         </h2>
-        <p className="text-muted-foreground mb-4">
+        <p className="text-muted-foreground">
             Details of all outstanding monthly installments and advance payments for the selected period.
         </p>
+        <div className="mt-3 mb-4 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+          Note: Bulk monthly payments now auto-apply any leftover to advance adjustments when the customer's initial advance is pending. Advance dues shown here already reflect these auto-adjustments.
+        </div>
         
         {/* --- START PRINTABLE AREA WRAPPER --- */}
         <div id="report-printable-area"> 

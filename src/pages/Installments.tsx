@@ -773,6 +773,91 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       installment_number?: number | null;
     }) => {
       setIsRecordingPayment(true);
+
+      // If monthly payment with an installment number, allocate across current and future installments
+      if (newPayment.payment_type === 'monthly' && newPayment.installment_number) {
+        // Build allocations by using the computed monthly schedule (expected vs paid)
+        let remaining = newPayment.amount_paid;
+        const rows: {
+          installment_plan_id: string;
+          payment_date: string;
+          amount_paid: number;
+          received_by: string;
+          payment_type: 'monthly';
+          installment_number: number;
+        }[] = [];
+
+        for (const item of monthlySchedule) {
+          if (item.installment_number < newPayment.installment_number) continue;
+          if (remaining <= 0) break;
+
+          const dueForThisInstallment = Math.max(0, item.expected_amount - item.paid_amount);
+          if (dueForThisInstallment <= 0) continue; // skip fully paid
+
+          const payNow = Math.min(remaining, dueForThisInstallment);
+          rows.push({
+            installment_plan_id: newPayment.installment_plan_id,
+            payment_date: newPayment.payment_date,
+            amount_paid: payNow,
+            received_by: newPayment.received_by,
+            payment_type: 'monthly',
+            installment_number: item.installment_number,
+          });
+          remaining -= payNow;
+        }
+
+        // Insert allocated monthly rows if any
+        let insertedRows: any[] = [];
+        if (rows.length > 0) {
+          const { data, error } = await supabase
+            .from('installment_payments')
+            .insert(rows)
+            .select();
+          if (error) throw error;
+          insertedRows = data as any[];
+
+          // Update total_paid_monthly_installments by the sum allocated
+          const totalAllocated = rows.reduce((sum, r) => sum + r.amount_paid, 0);
+          const { data: currentPlan, error: fetchPlanError } = await supabase
+            .from('installment_plans')
+            .select('total_paid_monthly_installments')
+            .eq('id', planId)
+            .single();
+          if (!fetchPlanError) {
+            const updatedTotalPaidMonthly = (currentPlan?.total_paid_monthly_installments || 0) + totalAllocated;
+            await supabase
+              .from('installment_plans')
+              .update({ total_paid_monthly_installments: updatedTotalPaidMonthly })
+              .eq('id', planId);
+          }
+        }
+
+        // Auto-apply leftover as advance adjustment if an advance is pending
+        if (remaining > 0 && remainingAgreedAdvanceDue > 0) {
+          const advanceApplied = Math.min(remaining, remainingAgreedAdvanceDue);
+          const advanceRow = {
+            installment_plan_id: newPayment.installment_plan_id,
+            payment_date: newPayment.payment_date,
+            amount_paid: advanceApplied,
+            received_by: newPayment.received_by,
+            payment_type: 'advance_adjustment' as const,
+            installment_number: null,
+          };
+          const { data: advanceData, error: advanceErr } = await supabase
+            .from('installment_payments')
+            .insert([advanceRow])
+            .select();
+          if (advanceErr) throw advanceErr;
+
+          insertedRows = [...insertedRows, ...(Array.isArray(advanceData) ? advanceData : [])];
+        }
+
+        if (insertedRows.length > 0) {
+          return insertedRows; // array of inserted payments (monthly + optional advance adjustment)
+        }
+      }
+
+      // Default single-row insert (advance_adjustment, commission, discount, or simple monthly)
       const { data, error } = await supabase
         .from('installment_payments')
         .insert([newPayment])
@@ -805,26 +890,112 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         }
       }
 
-      return data;
+      return data; // single payment
     },
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
       // Invalidate queries to trigger re-fetch and UI update
       queryClient.invalidateQueries({ queryKey: ['installment-payments', planId] });
       queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
       queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
       queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] });
 
-      toast({
-        title: "Payment Recorded!",
-        description: `Rs ${amountPaid.toLocaleString()} received for ${data.payment_type.replace('_', ' ')}.`,
-      });
+      if (Array.isArray(data)) {
+        const totalPaid = data.reduce((sum: number, p: InstallmentPayment) => sum + p.amount_paid, 0);
+        const coveredInstallments = data
+          .filter((p: InstallmentPayment) => p.payment_type === 'monthly' && p.installment_number)
+          .map((p: InstallmentPayment) => p.installment_number)
+          .filter(Boolean) as number[];
+        const advanceApplied = data
+          .filter((p: InstallmentPayment) => p.payment_type === 'advance_adjustment')
+          .reduce((sum: number, p: InstallmentPayment) => sum + p.amount_paid, 0);
 
-      // Calculate the remaining balance for the receipt immediately after the new payment.
-      // The remainingBalanceOnPlan is the total of customer debt + outstanding commission, 
-      // so any payment (customer or commission) reduces this overall debt.
-      const newRemainingBalanceForReceipt = remainingBalanceOnPlan - data.amount_paid;
-      
-      generatePaymentReceipt(data, newRemainingBalanceForReceipt); // Pass the new remaining balance
+        const descParts: string[] = [`Rs ${totalPaid.toLocaleString()} applied to installments #${coveredInstallments.join(', ')}`];
+        if (advanceApplied > 0) descParts.push(`and Rs ${advanceApplied.toLocaleString()} to Advance`);
+
+        toast({
+          title: 'Bulk Payment Recorded!',
+          description: descParts.join(' '),
+        });
+
+        // Print a combined bulk receipt (including any advance adjustment)
+        if (planDetails) {
+          const receiptHtml = `
+            <div style="font-family: 'Inter', sans-serif; padding: 10px; width: 100%; box-sizing: border-box; font-size: 10px; line-height: 1.4;">
+              <style>
+                @media print {
+                  body { margin: 0; padding: 0; }
+                  .receipt-container { width: 100%; height: 148.5mm; margin: 0; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; }
+                  .no-print { display: none; }
+                }
+                table { width: 100%; border-collapse: collapse; }
+                th, td { border: 1px solid #ddd; padding: 4px; text-align: left; font-size: 9px; }
+              </style>
+              <div class="receipt-container">
+                <div style="text-align: center; border-bottom: 2px solid #333; padding-bottom: 5px; margin-bottom: 10px;">
+                  <h2 style="margin: 0; font-size: 14px; color: #333;">AL-HAMD TRADERS</h2>
+                  <p style="margin: 0; font-size: 8px; color: #666;">Railway Road Chowk Shamah, Sargodha</p>
+                </div>
+                <p style="text-align: center; font-weight: bold; margin-bottom: 10px; font-size: 11px;">BULK MONTHLY PAYMENT RECEIPT</p>
+                <p style="margin-bottom: 5px;"><strong>Date:</strong> ${new Date(data[0].payment_date).toLocaleDateString()}</p>
+
+                <div style="margin-bottom: 10px; border: 1px dashed #ccc; padding: 5px;">
+                  <p style="margin: 0; font-weight: bold;">Customer Details:</p>
+                  <p style="margin: 0;"><strong>Name:</strong> ${planDetails.customers?.name}</p>
+                  <p style="margin: 0;"><strong>Phone:</strong> ${planDetails.customers?.phone}</p>
+                </div>
+
+                <div style="margin-bottom: 10px; border: 1px dashed #ccc; padding: 5px;">
+                  <p style="margin: 0; font-weight: bold;">Rickshaw Details:</p>
+                  <p style="margin: 0;"><strong>Manufacturer:</strong> ${planDetails.rikshaws?.manufacturer}</p>
+                  <p style="margin: 0;"><strong>Reg No:</strong> ${planDetails.rikshaws?.registration_number}</p>
+                  <p style="margin: 0;"><strong>Engine No:</strong> ${planDetails.rikshaws?.engine_number}</p>
+                </div>
+
+                <div style="margin-bottom: 10px; border: 1px dashed #ccc; padding: 5px;">
+                  <p style="margin: 0; font-weight: bold;">Payment Details:</p>
+                  <p style="margin: 0;"><strong>Total Paid:</strong> Rs ${totalPaid.toLocaleString()}</p>
+                  <p style="margin: 0;"><strong>Applied Installments:</strong> #${coveredInstallments.join(', ')}</p>
+                </div>
+
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Installment #</th>
+                      <th>Amount Applied (Rs)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${data.map((p: InstallmentPayment) => `<tr><td>${p.payment_type === 'monthly' ? 'Monthly' : 'Advance Adjustment'}</td><td>${p.installment_number ?? '-'}</td><td>${p.amount_paid.toLocaleString()}</td></tr>`).join('')}
+                  </tbody>
+                </table>
+
+                <div style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 6px; font-size: 9px;">
+                  <p style="margin: 0;">Received By: ${data[0].received_by}</p>
+                </div>
+              </div>
+            </div>
+          `;
+          const printWindow = window.open('', '_blank');
+          if (printWindow) {
+            printWindow.document.write(receiptHtml);
+            printWindow.document.close();
+            printWindow.print();
+          }
+        }
+
+        // Update remaining balance contextually (no single-payment receipt used here)
+      } else {
+        const payment: InstallmentPayment = data as InstallmentPayment;
+        toast({
+          title: 'Payment Recorded!',
+          description: `Rs ${amountPaid.toLocaleString()} received for ${payment.payment_type.replace('_', ' ')}.`,
+        });
+
+        // Calculate the remaining balance for the receipt immediately after the new payment.
+        const newRemainingBalanceForReceipt = remainingBalanceOnPlan - payment.amount_paid;
+        generatePaymentReceipt(payment, newRemainingBalanceForReceipt);
+      }
 
       setShowRecordPaymentForm(false);
       setAmountPaid(0);
@@ -834,9 +1005,9 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     },
     onError: (error: any) => {
       toast({
-        title: "Error recording payment",
+        title: 'Error recording payment',
         description: error.message,
-        variant: "destructive",
+        variant: 'destructive',
       });
     },
     onSettled: () => setIsRecordingPayment(false)

@@ -28,6 +28,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Auth />} />
+            <Route path="/index" element={<Index />} />
             <Route path="/dashboard" element={
               <ProtectedRoute>
                 <AdminLayout />
