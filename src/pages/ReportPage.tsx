@@ -45,7 +45,7 @@ interface InstallmentPayment {
     id: string;
     installment_plan_id: string;
     amount_paid: number;
-    payment_type: 'monthly' | 'advance_adjustment';
+    payment_type: 'monthly' | 'advance_adjustment' | 'discount' | string;
     installment_number?: number | null;
 }
   
@@ -169,7 +169,7 @@ const ReportPage = () => {
   useEffect(() => { if (plansError) { toast({ title: "Error fetching installment plans", description: plansError.message, variant: "destructive" }); } }, [plansError, toast]);
   useEffect(() => { if (allPaymentsError) { toast({ title: "Error fetching payments", description: allPaymentsError.message, variant: "destructive" }); } }, [allPaymentsError, toast]);
 
-  // --- Core Report Logic (YOUR ORIGINAL LOGIC - UNMODIFIED) ---
+  // --- Core Report Logic (UPDATED) ---
   const rawReportData: ReportEntry[] = useMemo(() => {
     if (loadingPlans || loadingAllPayments) return [];
 
@@ -182,21 +182,58 @@ const ReportPage = () => {
     installmentPlans.forEach(plan => {
       const paymentsForPlan = allInstallmentPayments.filter(p => p.installment_plan_id === plan.id);
       const planAgreementDate = parseISO(plan.agreement_date);
-      const monthlyPaymentsMade: Record<number, number> = {};
+      
+      // --- NEW LOGIC: Pooled Monthly Payments ---
+      // We sum ALL monthly payments into a single pool and distribute them sequentially to the expected installments.
+      // This ensures that if a customer pays "Advance" or "Bulk" without tagging specific installments, 
+      // the earliest dues are cleared first, preventing false "Overdue" flags for completed/advanced plans.
+      let totalMonthlyPool = paymentsForPlan
+          .filter(p => p.payment_type === 'monthly')
+          .reduce((sum, p) => sum + p.amount_paid, 0);
 
-      paymentsForPlan
-        .filter(p => p.payment_type === 'monthly' && p.installment_number !== null)
-        .forEach(p => {
-          if (p.installment_number) {
-            monthlyPaymentsMade[p.installment_number] = (monthlyPaymentsMade[p.installment_number] || 0) + p.amount_paid;
-          }
-        });
+      // --- NEW LOGIC: Calculate Target Debt considering Discounts ---
+      const totalDiscountApplied = paymentsForPlan.reduce((sum, p) => p.payment_type === 'discount' ? sum + p.amount_paid : sum, 0);
+      const initialAdvance = plan.advance_payments[0]?.amount || 0;
+      const advanceAdjustmentsPaid = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+      const collectedAdvance = initialAdvance + advanceAdjustmentsPaid;
+      
+      // Total amount that needs to be covered by monthly installments
+      const totalMonthlyTarget = Math.max(0, plan.total_price - collectedAdvance - totalDiscountApplied);
+
+      const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+      let remainingAdvance = totalAgreedAdvance - collectedAdvance;
+
+      // --- NEW STEP: Apply totalMonthlyPool to remainingAdvance first ---
+      const paidToAdvance = Math.min(remainingAdvance, totalMonthlyPool);
+      remainingAdvance -= paidToAdvance;
+      totalMonthlyPool -= paidToAdvance;
+
+      let remainingTargetToAllocate = totalMonthlyTarget;
 
       for (let i = 1; i <= plan.duration_months; i++) {
         const dueDate = addMonths(planAgreementDate, i);
-        const paidAmount = monthlyPaymentsMade[i] || 0;
-        const expectedAmount = plan.monthly_installment;
+        
+        let expectedAmount = 0;
+
+        // --- Waterfall Allocation of Target Debt ---
+        if (i === plan.duration_months) {
+             expectedAmount = Math.max(0, Math.round(remainingTargetToAllocate));
+        } else {
+             expectedAmount = Math.min(plan.monthly_installment, Math.max(0, remainingTargetToAllocate));
+             expectedAmount = Math.round(expectedAmount);
+        }
+        
+        remainingTargetToAllocate -= expectedAmount;
+        
+        // --- Bucket Filling from Pool ---
+        // How much of this month's expectation can be covered by the pool?
+        const paidAmount = Math.min(expectedAmount, totalMonthlyPool);
+        
+        // Decrement the pool
+        totalMonthlyPool -= paidAmount;
+
         const isDueInMonth = (isAfter(dueDate, startOfSelectedMonth) && isBefore(dueDate, endOfSelectedMonth)) || format(dueDate, 'yyyy-MM-dd') === format(startOfSelectedMonth, 'yyyy-MM-dd') || format(dueDate, 'yyyy-MM-dd') === format(endOfSelectedMonth, 'yyyy-MM-dd');
+        // A payment is overdue if logic date is before start of selected month AND it's not fully paid
         const isOverdue = isBefore(dueDate, startOfSelectedMonth) && paidAmount < expectedAmount;
 
         if ((isDueInMonth || isOverdue) && paidAmount < expectedAmount) {
@@ -207,17 +244,8 @@ const ReportPage = () => {
         }
       }
 
-      let totalMonthlyOverpayment = 0;
-      Object.keys(monthlyPaymentsMade).forEach(numStr => {
-        const paid = monthlyPaymentsMade[parseInt(numStr)];
-        if (paid > plan.monthly_installment) totalMonthlyOverpayment += paid - plan.monthly_installment;
-      });
-      
-      const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
-      const advanceAdjustmentsPaid = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
-      const initialAdvance = plan.advance_payments[0]?.amount || 0;
-      const totalAdvanceCollected = initialAdvance + advanceAdjustmentsPaid;
-      const remainingAdvance = (totalAgreedAdvance - totalAdvanceCollected) - totalMonthlyOverpayment;
+      // Any remaining amount in the pool after monthly allocation is considered overpayment
+      // But since we applied to advance first, no further adjustment to remainingAdvance
 
       if (remainingAdvance > 0) {
         const advanceDueDate = plan.advance_payments[0]?.date ? parseISO(plan.advance_payments[0].date) : planAgreementDate;
