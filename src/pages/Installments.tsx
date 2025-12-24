@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, Edit, Save, Loader2 } from 'lucide-react';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Car, Calendar, DollarSign, Check, ChevronDown, ChevronUp, Printer, Plus, X, Eye, Search, SortAsc, SortDesc, Edit, Save, Loader2, Trash2 } from 'lucide-react';
 import { format, addMonths, isBefore, parseISO } from 'date-fns';
 import { cn } from '@/lib/utils';
 
@@ -49,30 +50,18 @@ interface InstallmentPlan {
   customer_id: string;
   rikshaw_id: string;
   total_price: number;
-  advance_paid: number; // Total advance amount agreed upon - This will now be the sum of all initial advance payments
-  advance_payments: AdvancePayment[]; // Array of initial individual advance payments made at sale time
+  advance_paid: number;
   monthly_installment: number;
   duration_months: number;
-  guarantor_name: string;
-  guarantor_cnic: string;
-  guarantor_phone: string;
-  guarantor_address: string;
-  bank_name: string;
-  cheque_number: string;
-  rikshaw_details: {
-    manufacturer: string;
-    model_name: string;
-    engine_number: string;
-    chassis_number: string;
-    registration_number: string;
-    type: string;
-  };
-  customers: Customer; // Nested customer details
-  rikshaws: Rikshaw; // Nested rikshaw details
-  created_at: string; // Sale date
-  agreement_date: string; // Added agreement_date
-  total_paid_monthly_installments?: number; // Aggregate of only monthly payments
-  // 🛑 Added Commission Fields
+  remaining_amount: number;
+  start_date: string;
+  created_at: string;
+  updated_at: string;
+  customers?: Customer;
+  rikshaws?: Rikshaw;
+  advance_payments: AdvancePayment[];
+  agreement_date?: string;
+  total_paid_monthly_installments?: number;
   showroom_commission?: number;
   is_commission_paid?: boolean;
 }
@@ -420,12 +409,16 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
   const [editedPaymentType, setEditedPaymentType] = useState<'monthly' | 'advance_adjustment' | 'commission' | 'discount'>('monthly'); // 🛑 Updated type
   const [editedInstallmentNumber, setEditedInstallmentNumber] = useState<number | null>(null);
 
+  // State for delete confirmation
+  const [paymentToDelete, setPaymentToDelete] = useState<InstallmentPayment | null>(null);
+
   // State for editing plan details
   const [isEditingPlan, setIsEditingPlan] = useState(false);
   const [editedTotalPrice, setEditedTotalPrice] = useState<number>(0);
   const [editedAdvanceAgreed, setEditedAdvanceAgreed] = useState<number>(0); // This is plan.advance_payments[0].amount
   const [editedMonthlyInstallment, setEditedMonthlyInstallment] = useState<number>(0);
   const [editedDurationMonths, setEditedDurationMonths] = useState<number>(0);
+  const [editedShowroomCommission, setEditedShowroomCommission] = useState<number>(0);
 
 
   // Fetch specific installment plan details
@@ -490,6 +483,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       setEditedAdvanceAgreed(planDetails.advance_payments[0]?.amount || 0); // Use the first advance payment as 'agreed'
       setEditedMonthlyInstallment(planDetails.monthly_installment);
       setEditedDurationMonths(planDetails.duration_months);
+      setEditedShowroomCommission(planDetails.showroom_commission || 0);
     }
   }, [planDetails]);
 
@@ -655,6 +649,14 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     ).map(item => item.installment_number);
   }, [monthlySchedule, planDetails]);
 
+  // AUTO-FILL: Automatically set the installment number to the first unpaid/partial installment
+  // This helps the user see which installment is next due.
+  useEffect(() => {
+    if (availableInstallments.length > 0 && installmentNumber === null) {
+      setInstallmentNumber(availableInstallments[0]);
+    }
+  }, [availableInstallments, installmentNumber]);
+
   // Function to generate and print a payment receipt
   const generatePaymentReceipt = useCallback((payment: InstallmentPayment, finalRemainingBalance: number) => {
     if (!planDetails) {
@@ -788,7 +790,10 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
         }[] = [];
 
         for (const item of monthlySchedule) {
-          if (item.installment_number < newPayment.installment_number) continue;
+          // REMOVED: if (item.installment_number < newPayment.installment_number) continue;
+          // User Request: Always fill the earliest unpaid/partial installments first (waterfall),
+          // regardless of the manually entered installment number.
+          
           if (remaining <= 0) break;
 
           const dueForThisInstallment = Math.max(0, item.expected_amount - item.paid_amount);
@@ -1037,7 +1042,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
             .update({ is_commission_paid: true })
             .eq('id', planId);
       }
-      // Note: Reverting a commission payment to non-commission status would require 
+      // Note: Reverting a commission payment to non-commission status would require
       // complex logic to reset the flag, which is omitted for simplicity but is a business consideration.
 
 
@@ -1064,6 +1069,34 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
     }
   });
 
+  // Mutation to delete a payment
+  const deletePaymentMutation = useMutation({
+    mutationFn: async (paymentId: string) => {
+      const { error } = await supabase
+        .from('installment_payments')
+        .delete()
+        .eq('id', paymentId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['installment-payments', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plan-details', planId] });
+      queryClient.invalidateQueries({ queryKey: ['installment-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['all-installment-payments'] });
+      toast({
+        title: "Payment Deleted!",
+        description: "Payment has been successfully deleted.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error deleting payment",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+  });
+
   // Mutation to update the installment plan details (omitted for brevity, no change needed)
   const updateInstallmentPlanMutation = useMutation({
      mutationFn: async (updatedPlan: {
@@ -1071,6 +1104,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
        advance_paid: number; 
        monthly_installment: number;
        duration_months: number;
+       showroom_commission: number;
      }) => {
        // Fetch the current advance_payments array
        const { data: currentPlanData, error: fetchError } = await supabase
@@ -1107,6 +1141,7 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
            advance_payments: updatedAdvancePayments, // Update the JSONB array
            monthly_installment: updatedPlan.monthly_installment,
            duration_months: updatedPlan.duration_months,
+           showroom_commission: updatedPlan.showroom_commission,
          })
          .eq('id', planId)
          .select()
@@ -1221,12 +1256,17 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
       toast({ title: "Error", description: "Duration in Months must be greater than 0.", variant: "destructive" });
       return;
     }
+    if (editedShowroomCommission < 0) {
+      toast({ title: "Error", description: "Commission cannot be negative.", variant: "destructive" });
+      return;
+    }
 
     updateInstallmentPlanMutation.mutate({
       total_price: editedTotalPrice,
       advance_paid: editedAdvanceAgreed,
       monthly_installment: editedMonthlyInstallment,
       duration_months: editedDurationMonths,
+      showroom_commission: editedShowroomCommission,
     });
   };
 
@@ -1450,7 +1490,16 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                 </div>
                 <div className="space-y-2">
                   <Label className="text-muted-foreground">Showroom Commission:</Label>
-                  <p className="font-bold text-lg">Rs {planDetails.showroom_commission?.toLocaleString() || 0}</p>
+                  {isEditingPlan ? (
+                    <Input
+                      type="number"
+                      value={editedShowroomCommission}
+                      onChange={(e) => setEditedShowroomCommission(parseFloat(e.target.value) || 0)}
+                      className="font-bold text-lg"
+                    />
+                  ) : (
+                    <p className="font-bold text-lg">Rs {planDetails.showroom_commission?.toLocaleString() || 0}</p>
+                  )}
                 </div>
                 {/* Re-added Remaining Advance Balance and Overall Remaining Balance */}
                 <div className="space-y-2">
@@ -1617,17 +1666,26 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
                             </TableCell>
                             <TableCell>{payment.received_by}</TableCell>
                             <TableCell className="text-right">
-                              {/* Only show edit button for payments made post-sale (i.e., not the initial advance) */}
+                              {/* Only show edit and delete buttons for payments made post-sale (i.e., not the initial advance) */}
                               {payment.id.startsWith('initial-') ? (
                                 <span className="text-muted-foreground">N/A</span>
                               ) : (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => openEditPaymentModal(payment)}
-                                >
-                                  <Edit className="h-4 w-4" />
-                                </Button>
+                                <div className="flex gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => openEditPaymentModal(payment)}
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setPaymentToDelete(payment)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
                               )}
                             </TableCell>
                           </TableRow>
@@ -1851,6 +1909,31 @@ const InstallmentDetailModal: React.FC<InstallmentDetailModalProps> = ({ planId,
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      )}
+
+      {/* Delete Payment Confirmation Dialog */}
+      {paymentToDelete && (
+        <AlertDialog open={!!paymentToDelete} onOpenChange={() => setPaymentToDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Payment</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete this payment of Rs {paymentToDelete.amount_paid.toLocaleString()}? This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => {
+                if (paymentToDelete) {
+                  deletePaymentMutation.mutate(paymentToDelete.id);
+                  setPaymentToDelete(null);
+                }
+              }}>
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </Dialog>
   );

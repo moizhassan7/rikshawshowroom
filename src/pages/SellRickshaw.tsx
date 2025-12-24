@@ -884,10 +884,10 @@ const { data: rikshaws = [], isLoading: loadingRikshaws } = useQuery<Rikshaw[]>(
 
             {/* Submit Button */}
             <div className="flex justify-end pt-6">
-              <Button 
-                size="lg" 
+              <Button
+                size="lg"
                 onClick={() => setShowPreview(true)}
-                disabled={!saleData.customer_id || !saleData.rikshaw_id || saleData.total_price <= 0 || advancePayments[0].amount <= 0 || !advancePayments[0].date || advancePayments.some((p, i) => i > 0 && (p.amount <= 0 || !p.date)) || saleData.duration_months <= 0}
+                disabled={!saleData.customer_id || !saleData.rikshaw_id || saleData.total_price <= 0 || advancePayments[0].amount <= 0 || !advancePayments[0].date || advancePayments.some((p, i) => i > 0 && (p.amount <= 0 || !p.date))}
                 className="px-10 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-xl font-bold transition duration-300 transform hover:scale-[1.01]"
               >
                 Preview Sale Details

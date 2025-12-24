@@ -63,71 +63,16 @@ interface ReportEntry {
 // -----------------------------
 
 // Helper function to split combined ReportEntry into separate, renderable due items
+// NOW SIMPLIFIED: Just returns the items array attached to the entry
 const splitMergedEntry = (entry: ReportEntry) => {
-    const types = entry.type.split(' & ').map(t => t.trim());
-    
-    // This helper logic is kept exactly as it was in the previous response
-    if (types.length === 1 && entry.type === 'Monthly' && typeof entry.installmentNumber === 'string' && entry.installmentNumber.includes(',')) {
-        const installments = entry.installmentNumber.toString().split(', ').map(s => s.replace('#', '').trim());
-        const items = [{
-            type: entry.type,
-            installment: entry.installmentNumber,
-            date: entry.dueDate,
-            amount: entry.amountDue,
-            status: entry.status,
-            sortKey: entry.dueDate,
-        }];
-        
-        for (let i = 1; i < installments.length; i++) {
-             items.push({
-                type: entry.type,
-                installment: installments[i],
-                date: entry.dueDate, 
-                amount: 0, 
-                status: entry.status,
-                sortKey: entry.dueDate,
-             });
-        }
-        return items;
-
-    } else if (types.length > 1) {
-        const allDues = [];
-        const hasAdvance = types.includes('Advance Due');
-        const hasMonthly = types.includes('Monthly');
-
-        if (hasAdvance) {
-            allDues.push({
-                type: 'Advance Due',
-                installment: 'Advance',
-                date: entry.dueDate,
-                amount: hasMonthly ? entry.amountDue * 0.4 : entry.amountDue,
-                status: entry.status,
-                sortKey: entry.dueDate,
-            });
-        }
-        
-        if (hasMonthly) {
-             allDues.push({
-                type: 'Monthly',
-                installment: entry.installmentNumber,
-                date: entry.dueDate,
-                amount: hasAdvance ? entry.amountDue * 0.6 : entry.amountDue,
-                status: entry.status,
-                sortKey: entry.dueDate,
-            });
-        }
-        
-        return allDues.sort((a, b) => parseISO(a.sortKey).getTime() - parseISO(b.sortKey).getTime());
-    }
-
-    return [{
-        type: entry.type,
-        installment: entry.installmentNumber || '-',
-        date: entry.dueDate,
-        amount: entry.amountDue,
-        status: entry.status,
-        sortKey: entry.dueDate,
-    }];
+    return entry.items.map(item => ({
+        type: item.type,
+        installment: item.installment,
+        date: item.date,
+        amount: item.amount,
+        status: item.status,
+        sortKey: item.date,
+    })).sort((a, b) => parseISO(a.sortKey).getTime() - parseISO(b.sortKey).getTime());
 };
 // -----------------------------
 
@@ -177,7 +122,7 @@ const ReportPage = () => {
     const startOfSelectedMonth = startOfMonth(selectedDate);
     const endOfSelectedMonth = endOfMonth(selectedDate);
 
-    const individualDues: ReportEntry[] = [];
+    const individualDues: { planId: string; customerName: string; rikshawDetails: string; phoneNumber: string; item: DueItem }[] = [];
 
     installmentPlans.forEach(plan => {
       const paymentsForPlan = allInstallmentPayments.filter(p => p.installment_plan_id === plan.id);
@@ -193,20 +138,91 @@ const ReportPage = () => {
 
       // --- NEW LOGIC: Calculate Target Debt considering Discounts ---
       const totalDiscountApplied = paymentsForPlan.reduce((sum, p) => p.payment_type === 'discount' ? sum + p.amount_paid : sum, 0);
-      const initialAdvance = plan.advance_payments[0]?.amount || 0;
+      
       const advanceAdjustmentsPaid = paymentsForPlan.reduce((sum, p) => p.payment_type === 'advance_adjustment' ? sum + p.amount_paid : sum, 0);
+      
+      // Collected advance is what the user has paid so far towards the advance
+      // NOTE: initialAdvance here is what they AGREED to pay? No, plan.advance_payments usually tracks payments made at start?
+      // Actually, plan.advance_payments is the AGREED structure or the RECORD of payments?
+      // Based on typical usage, it's the RECORD.
+      // So Collected Advance = Sum(plan.advance_payments) + Sum(advance_adjustments)
+      // Wait, if plan.advance_payments are the Initial Payments, they are already "Collected".
+      // So totalAgreedAdvance should be compared against (Initial Collected + Adjustments).
+      
+      const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+      
+      // If we assume plan.advance_payments are "Paid", then we need to know the Target Advance.
+      // Usually "Advance Amount" is a field in the plan, but here we only have the payments array.
+      // Let's assume the "Agreed Advance" is what was paid initially? No, that makes no sense if there is a balance.
+      // The user usually sets an "Advance" amount, and then pays it.
+      // If `plan.advance_payments` stores the PAYMENTS, then we can't know the TARGET from it alone unless there is another field.
+      // BUT, looking at the code, `remainingAdvance` is calculated as `totalAgreedAdvance - collectedAdvance`.
+      // If `totalAgreedAdvance` comes from the SAME array as `initialAdvance` (part of collected), then remaining is always 0?
+      // Ah, `plan.advance_payments` likely stores the SCHEDULE of advance payments? Or the actual payments?
+      // "Records of the advance payments made at the time of plan creation." -> These are PAYMENTS.
+      // So `totalAgreedAdvance` calculated from this array is actually `totalInitialPaid`.
+      // Where is the TARGET Advance?
+      // Maybe `plan.total_price` - `duration` * `monthly`?
+      // Let's infer Target Advance from Total Price vs Monthly.
+      // Total Price = 490,000. Monthly = 35,000 * 7 = 245,000.
+      // Implied Advance Target = 490,000 - 245,000 = 245,000.
+      // User paid 75k + 125k = 200k.
+      // Remaining Advance should be 45k.
+      // But the screenshot says "Agreed Advance Amount: Rs 200,000".
+      // Where does this 200,000 come from if not from the sum of payments?
+      // Maybe the user manually entered it?
+      // If `plan.advance_payments` sums to 200k, then the user PAID 200k.
+      // So Remaining should be 0.
+      // But the screenshot says Remaining 5,000.
+      // This implies the user PLANNED 200k but PAID 195k?
+      // Or maybe `plan.advance_payments` has a structure { amount: 200000, date: ... } but it's not fully paid?
+      // No, "Records of the advance payments MADE".
+      
+      // Let's stick to the previous logic which seemed to work for the user ("Remaining Advance Balance: Rs 5,000" in Summary).
+      // The summary likely uses a different calculation.
+      // For now, I will use the `initialAdvance` fix (summing all) but I need to be careful not to break it if `collectedAdvance` logic was relying on index 0.
+      // If I change `initialAdvance` to sum all, `collectedAdvance` increases.
+      // `remainingAdvance` = `totalAgreedAdvance` - `collectedAdvance`.
+      // If `totalAgreedAdvance` is ALSO the sum of all, then remaining is 0 (minus adjustments).
+      // This suggests `totalAgreedAdvance` might be coming from somewhere else or my assumption about `plan.advance_payments` is wrong.
+      
+      // Let's look at `totalAgreedAdvance` in the original code:
+      // const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+      
+      // And `collectedAdvance`:
+      // const initialAdvance = plan.advance_payments[0]?.amount || 0;
+      // const collectedAdvance = initialAdvance + advanceAdjustmentsPaid;
+      
+      // This implies that ONLY the first payment in `advance_payments` is considered "Initial Collection".
+      // The rest in `advance_payments` (if any) are... ignored? Or considered "Agreed but not paid"?
+      // If the user has [75k, 125k] in `advance_payments`.
+      // totalAgreed = 200k.
+      // initialAdvance (collected) = 75k.
+      // remaining = 200k - 75k = 125k.
+      // Then user pays 95k + 25k = 120k via adjustments.
+      // collected = 75k + 120k = 195k.
+      // remaining = 200k - 195k = 5k.
+      // THIS MATCHES THE SCREENSHOT EXACTLY!
+      
+      // So, `plan.advance_payments` array contains the PLAN for advance? Or the first one is paid and rest are promised?
+      // Whatever the logic, the "index 0" approach seems to be the intended way to calculate "Initial Paid" vs "Total Agreed" from that array structure.
+      // I will REVERT the idea of summing all for `initialAdvance` to avoid breaking this specific 5k result.
+      
+      const initialAdvance = plan.advance_payments[0]?.amount || 0; // KEEPING AS IS based on deduction
       const collectedAdvance = initialAdvance + advanceAdjustmentsPaid;
       
       // Total amount that needs to be covered by monthly installments
       const totalMonthlyTarget = Math.max(0, plan.total_price - collectedAdvance - totalDiscountApplied);
 
-      const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0);
+      // const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0); // Already defined below in original
+      // const totalAgreedAdvance = plan.advance_payments.reduce((sum, p) => sum + p.amount, 0); // Defined above now
       let remainingAdvance = totalAgreedAdvance - collectedAdvance;
 
       // --- NEW STEP: Apply totalMonthlyPool to remainingAdvance first ---
-      const paidToAdvance = Math.min(remainingAdvance, totalMonthlyPool);
-      remainingAdvance -= paidToAdvance;
-      totalMonthlyPool -= paidToAdvance;
+      // REMOVED: Auto-application of monthly pool to advance. Users want strict separation.
+      // const paidToAdvance = Math.min(remainingAdvance, totalMonthlyPool);
+      // remainingAdvance -= paidToAdvance;
+      // totalMonthlyPool -= paidToAdvance;
 
       let remainingTargetToAllocate = totalMonthlyTarget;
 
@@ -239,7 +255,13 @@ const ReportPage = () => {
         if ((isDueInMonth || isOverdue) && paidAmount < expectedAmount) {
           individualDues.push({
             planId: plan.id, customerName: plan.customers?.name || 'N/A', rikshawDetails: `REG: ${plan.rikshaws?.registration_number || 'N/A'} (ENG: ${plan.rikshaws?.engine_number || 'N/A'})`, phoneNumber: plan.customers?.phone || 'N/A',
-            amountDue: expectedAmount - paidAmount, dueDate: format(dueDate, 'yyyy-MM-dd'), type: 'Monthly', installmentNumber: i, status: isBefore(dueDate, today) ? 'Overdue' : 'Due',
+            item: {
+                type: 'Monthly',
+                installment: i,
+                date: format(dueDate, 'yyyy-MM-dd'),
+                amount: expectedAmount - paidAmount,
+                status: isBefore(dueDate, today) ? 'Overdue' : 'Due'
+            }
           });
         }
       }
@@ -255,7 +277,13 @@ const ReportPage = () => {
         if (isDueInMonth || isOverdue) {
           individualDues.push({
             planId: plan.id, customerName: plan.customers?.name || 'N/A', rikshawDetails: `REG: ${plan.rikshaws?.registration_number || 'N/A'} (ENG: ${plan.rikshaws?.engine_number || 'N/A'})`, phoneNumber: plan.customers?.phone || 'N/A',
-            amountDue: remainingAdvance, dueDate: format(advanceDueDate, 'yyyy-MM-dd'), type: 'Advance Due', installmentNumber: null, status: isBefore(advanceDueDate, today) ? 'Overdue' : 'Due',
+            item: {
+                type: 'Advance Due',
+                installment: 'Advance',
+                date: format(advanceDueDate, 'yyyy-MM-dd'),
+                amount: remainingAdvance,
+                status: isBefore(advanceDueDate, today) ? 'Overdue' : 'Due'
+            }
           });
         }
       }
@@ -265,28 +293,30 @@ const ReportPage = () => {
 
     individualDues.forEach(due => {
       if (!mergedDues[due.planId]) {
-        mergedDues[due.planId] = { ...due, type: '', installmentNumber: '' };
-      } else {
-        mergedDues[due.planId].amountDue += due.amountDue;
-      }
-
-      const existing = mergedDues[due.planId];
-      const types = new Set(existing.type ? existing.type.split(' & ') : []);
-      types.add(due.type);
-      existing.type = Array.from(types).join(' & ');
-
-      if (due.type === 'Monthly' && due.installmentNumber) {
-        const installments = existing.installmentNumber ? existing.installmentNumber.toString().split(', ') : [];
-        installments.push(`#${due.installmentNumber}`);
-        existing.installmentNumber = Array.from(new Set(installments)).join(', ');
+        mergedDues[due.planId] = {
+            planId: due.planId,
+            customerName: due.customerName,
+            rikshawDetails: due.rikshawDetails,
+            phoneNumber: due.phoneNumber,
+            totalAmountDue: 0,
+            items: [],
+            overallStatus: 'Due',
+            dueDate: due.item.date
+        };
       }
       
-      if (isBefore(parseISO(due.dueDate), parseISO(existing.dueDate))) {
-        existing.dueDate = due.dueDate;
+      const entry = mergedDues[due.planId];
+      entry.items.push(due.item);
+      entry.totalAmountDue += due.item.amount;
+      
+      // Update overall status if any item is overdue
+      if (due.item.status === 'Overdue') {
+        entry.overallStatus = 'Overdue';
       }
-
-      if (due.status === 'Overdue') {
-        existing.status = 'Overdue';
+      
+      // Keep earliest due date
+      if (isBefore(parseISO(due.item.date), parseISO(entry.dueDate))) {
+        entry.dueDate = due.item.date;
       }
     });
 
@@ -501,7 +531,7 @@ const ReportPage = () => {
                                                     {entry.phoneNumber}
                                                 </TableCell>
                                                 <TableCell className="font-bold align-top text-red-600" rowSpan={rowCount}>
-                                                    Rs {entry.amountDue.toLocaleString()}
+                                                    Rs {entry.totalAmountDue.toLocaleString()}
                                                 </TableCell>
                                             </>
                                         )}
@@ -519,7 +549,8 @@ const ReportPage = () => {
                                                 <span>{new Date(dueItem.date).toLocaleDateString()} (Inst. {dueItem.installment ? dueItem.installment : '-'})</span>
                                                 <span className={cn(
                                                     "px-2 py-0.5 rounded-full text-xs font-medium",
-                                                    dueItem.status === 'Overdue' ? "bg-red-100 text-red-800" : "bg-blue-100 text-blue-800",
+                                                    dueItem.status === 'Overdue' && "bg-red-100 text-red-800",
+                                                    dueItem.status === 'Due' && "bg-blue-100 text-blue-800",
                                                 )}>{dueItem.status}</span>
                                             </div>
                                         </TableCell>
@@ -529,10 +560,10 @@ const ReportPage = () => {
                                                 <div className="flex justify-center items-center">
                                                     <span className={cn(
                                                         "px-2 py-1 rounded-full text-xs font-medium uppercase",
-                                                        entry.status === 'Overdue' && "bg-red-100 text-red-800",
-                                                        entry.status === 'Due' && "bg-blue-100 text-blue-800",
+                                                        entry.overallStatus === 'Overdue' && "bg-red-100 text-red-800",
+                                                        entry.overallStatus === 'Due' && "bg-blue-100 text-blue-800",
                                                     )}>
-                                                        {entry.status}
+                                                        {entry.overallStatus}
                                                     </span>
                                                 </div>
                                             </TableCell>

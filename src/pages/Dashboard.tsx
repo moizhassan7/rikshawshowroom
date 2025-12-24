@@ -363,25 +363,38 @@ const Dashboard = () => {
     return currentMonthPurchases.reduce((sum: number, rikshaw: Rikshaw) => sum + (rikshaw.purchase_price || 0), 0);
   }, [currentMonthPurchases, loadingCurrentMonthPurchases]);
 
-  // Calculate profit for this month's sales
-  const currentMonthProfit = useMemo(() => {
+  // Ongoing plans: created before the start of the current month
+  const ongoingPlans = useMemo(() => {
+    return installmentPlans.filter(plan => parseISO(plan.created_at) < parseISO(currentMonthStart));
+  }, [installmentPlans, currentMonthStart]);
+
+  // Expected to collect this month from ongoing plans: monthly installments due this month
+  const expectedThisMonth = useMemo(() => {
     if (loadingPlans) return 0;
-    let totalSalePrice = 0;
-    let totalPurchasePrice = 0;
-
-    const salesThisMonthPlans = installmentPlans.filter(plan => {
-      const planCreatedAt = parseISO(plan.created_at);
-      return planCreatedAt.getMonth() === today.getMonth() && planCreatedAt.getFullYear() === today.getFullYear();
-    });
-
-    salesThisMonthPlans.forEach(plan => {
-      if (plan.rikshaws) {
-        totalSalePrice += plan.rikshaws.sale_price || 0;
-        totalPurchasePrice += plan.rikshaws.purchase_price || 0;
+    let total = 0;
+    ongoingPlans.forEach(plan => {
+      const agreementDate = parseISO(plan.agreement_date);
+      for (let i = 1; i <= plan.duration_months; i++) {
+        const dueDate = addMonths(agreementDate, i);
+        if (dueDate >= parseISO(currentMonthStart) && dueDate <= parseISO(currentMonthEnd)) {
+          total += plan.monthly_installment;
+        }
       }
     });
-    return totalSalePrice - totalPurchasePrice;
-  }, [installmentPlans, loadingPlans, today]);
+    return total;
+  }, [ongoingPlans, loadingPlans, currentMonthStart, currentMonthEnd]);
+
+  // Collected this month from ongoing plans: sum of payments received this month
+  const collectedThisMonth = useMemo(() => {
+    if (loadingAllPayments) return 0;
+    return allInstallmentPayments
+      .filter(payment => {
+        const paymentDate = parseISO(payment.payment_date);
+        return paymentDate >= parseISO(currentMonthStart) && paymentDate <= parseISO(currentMonthEnd) &&
+               ongoingPlans.some(plan => plan.id === payment.installment_plan_id);
+      })
+      .reduce((sum, payment) => sum + payment.amount_paid, 0);
+  }, [allInstallmentPayments, loadingAllPayments, ongoingPlans, currentMonthStart, currentMonthEnd]);
 
 
   // Generate upcoming installments for the next 7 days (including today)
@@ -470,8 +483,8 @@ const Dashboard = () => {
           </p>
         </div>
 
-        {/* Key Metrics Cards (5 columns) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6">
+        {/* Key Metrics Cards (6 columns) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
           
           {/* New Available Stock Card */}
           <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
@@ -522,15 +535,30 @@ const Dashboard = () => {
           
           <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Profit This Month</CardTitle>
+              <CardTitle className="text-sm font-medium">Collected This Month</CardTitle>
               <DollarSign className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-green-600">
-                {loadingPlans ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${currentMonthProfit.toLocaleString()}`}
+                {(loadingPlans || loadingAllPayments) ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${collectedThisMonth.toLocaleString()}`}
               </div>
               <p className="text-xs text-muted-foreground">
-                Net profit from sales in {format(today, 'MMM yyyy')}.
+                Payments received from ongoing plans in {format(today, 'MMM yyyy')}.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border shadow-sm rounded-lg hover:shadow-md transition-shadow">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Expected This Month</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-600">
+                {loadingPlans ? <Loader2 className="h-6 w-6 animate-spin text-primary" /> : `Rs ${expectedThisMonth.toLocaleString()}`}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Expected payments from ongoing plans in {format(today, 'MMM yyyy')}.
               </p>
             </CardContent>
           </Card>
